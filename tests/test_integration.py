@@ -119,7 +119,7 @@ class TestRouterEndToEnd(unittest.IsolatedAsyncioTestCase):
     """Drives the multi-protocol router directly against live models."""
 
     async def asyncSetUp(self):
-        self.router = llmRouter()
+        self.router = llmRouter(API_CONFIG)
 
     async def asyncTearDown(self):
         await self.router.close()
