@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import re
@@ -18,17 +19,23 @@ class skillLoader:
         self._skillPath = skillFolderPath
         self._skills = []
         self._index = None
+        self._loaded = False
 
-        embedding_url = os.getenv(
+        self._embedding_url = os.getenv(
             "EMBEDDING_URL", "https://integrate.api.nvidia.com/v1"
         )
-        embedding_api = os.getenv("EMBEDDING_API")
+        self._embedding_api = os.getenv("EMBEDDING_API")
         self._embedding_model = os.getenv("EMBEDDING_MODEL", "nvidia/nv-embed-v1")
+        self._client: Optional[OpenAI] = None
 
-        if not embedding_api:
-            raise ValueError("EMBEDDING_API not found in environment")
-
-        self._client = OpenAI(api_key=embedding_api, base_url=embedding_url)
+    def _getClient(self) -> OpenAI:
+        if self._client is None:
+            if not self._embedding_api:
+                raise ValueError("EMBEDDING_API not found in environment")
+            self._client = OpenAI(
+                api_key=self._embedding_api, base_url=self._embedding_url
+            )
+        return self._client
 
     def _parse_frontmatter(self, content: str) -> tuple:
         pattern = r"^---\s*\n(.*?)\n---\s*\n(.*)$"
@@ -48,7 +55,8 @@ class skillLoader:
         return frontmatter or {}, body
 
     def _embed(self, text: str) -> list:
-        response = self._client.embeddings.create(
+        client = self._getClient()
+        response = client.embeddings.create(
             input=[text],
             model=self._embedding_model,
             encoding_format="float",
@@ -56,13 +64,19 @@ class skillLoader:
         )
         return response.data[0].embedding
 
-    def load(self) -> list:
+    def load(self, force: bool = False) -> list:
+        # Building the FAISS index and (re)embedding is expensive; skip it once
+        # loaded. Callers that change skills on disk can pass force=True.
+        if self._loaded and not force:
+            return self._skills
+
         with open(self._skillConfig, "r", encoding="utf-8") as f:
             config = json.load(f)
 
         self._skills = []
         embeddings = []
         updated_config = {}
+        has_new_embeddings = False
 
         for skill_name, skill_info in config.items():
             skill_path = os.path.join(self._skillPath, skill_info["relativePath"])
@@ -78,11 +92,11 @@ class skillLoader:
                 embedding = skill_info["embedding"]
             else:
                 embedding = self._embed(description)
+                has_new_embeddings = True
 
-            updated_config[skill_name] = {
-                "relativePath": skill_info["relativePath"],
-                "embedding": embedding,
-            }
+            updated_entry = dict(skill_info)
+            updated_entry["embedding"] = embedding
+            updated_config[skill_name] = updated_entry
 
             skill_dict = {
                 "skill_embedding": embedding,
@@ -96,8 +110,9 @@ class skillLoader:
             self._skills.append(skill_dict)
             embeddings.append(embedding)
 
-        with open(self._skillConfig, "w", encoding="utf-8") as f:
-            json.dump(updated_config, f, indent=2)
+        if has_new_embeddings:
+            with open(self._skillConfig, "w", encoding="utf-8") as f:
+                json.dump(updated_config, f, indent=2, ensure_ascii=False)
 
         if embeddings:
             embeddings_array = np.array(embeddings, dtype=np.float32)
@@ -106,6 +121,7 @@ class skillLoader:
             faiss.normalize_L2(embeddings_array)
             self._index.add(embeddings_array)
 
+        self._loaded = True
         return self._skills
 
     def getEmbedding(self, idx: int) -> list:
@@ -118,7 +134,7 @@ class skillLoader:
             raise IndexError(f"Skill index {idx} out of range")
         return self._skills[idx]
 
-    def search(self, query: str, top_k: int = 3) -> list:
+    def search(self, query: str, top_k: int = 3, min_score: float = 0.3) -> list:
         if not self._index or not self._skills:
             raise ValueError("Skills not loaded. Call load() first.")
 
@@ -132,8 +148,12 @@ class skillLoader:
         results = []
         for i, idx in enumerate(indices[0]):
             if idx >= 0:
+                score = float(distances[0][i])
+                if score < min_score:
+                    continue
                 skill = self._skills[idx].copy()
-                skill["score"] = float(distances[0][i])
+                skill["score"] = score
+                skill["idx"] = int(idx)
                 results.append(skill)
 
         return results
@@ -145,3 +165,28 @@ class skillLoader:
             composed.append(f"=== {skill['skill_name']} ===\n{skill['skill_context']}")
 
         return "\n\n".join(composed)
+
+    def searchAndCompose(
+        self, query: str, top_k: int = 3, min_score: float = 0.3
+    ) -> tuple:
+        results = self.search(query, top_k=top_k, min_score=min_score)
+        if not results:
+            return "", results
+        idxs = [r["idx"] for r in results]
+        composed = self.composeSkills(idxs)
+        return composed, results
+
+    async def loadAsync(self) -> list:
+        return await asyncio.to_thread(self.load)
+
+    async def searchAsync(
+        self, query: str, top_k: int = 3, min_score: float = 0.3
+    ) -> list:
+        return await asyncio.to_thread(self.search, query, top_k, min_score)
+
+    async def searchAndComposeAsync(
+        self, query: str, top_k: int = 3, min_score: float = 0.3
+    ) -> tuple:
+        return await asyncio.to_thread(
+            self.searchAndCompose, query, top_k, min_score
+        )

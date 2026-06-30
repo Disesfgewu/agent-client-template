@@ -1,3 +1,38 @@
-{
-    
-}
+[
+    {
+        "provider": "openai",
+        "protocol": "openai",
+        "endpointUrl": "https://api.openai.com/v1/chat/completions",
+        "modelName": "gpt-4o-mini",
+        "maxInputToken": 128000,
+        "maxOutputToken": 16384,
+        "apiKey": "sk-your-openai-key"
+    },
+    {
+        "provider": "anthropic",
+        "protocol": "anthropic",
+        "endpointUrl": "https://api.anthropic.com/v1/messages",
+        "modelName": "claude-sonnet-4-6",
+        "maxInputToken": 200000,
+        "maxOutputToken": 8192,
+        "apiKey": "sk-ant-your-key"
+    },
+    {
+        "provider": "google",
+        "protocol": "google",
+        "endpointUrl": "https://generativelanguage.googleapis.com",
+        "modelName": "gemini-2.5-pro",
+        "maxInputToken": 1048576,
+        "maxOutputToken": 65536,
+        "apiKey": "your-google-api-key"
+    },
+    {
+        "provider": "ollama",
+        "protocol": "ollama",
+        "endpointUrl": "http://localhost:11434/api/chat",
+        "modelName": "llama3.1",
+        "maxInputToken": 128000,
+        "maxOutputToken": 8192,
+        "apiKey": ""
+    }
+]

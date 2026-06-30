@@ -1,0 +1,11 @@
+{
+    "code-review": {
+        "relativePath": "code-review.md"
+    },
+    "debugging": {
+        "relativePath": "debugging.md"
+    },
+    "testing": {
+        "relativePath": "testing.md"
+    }
+}

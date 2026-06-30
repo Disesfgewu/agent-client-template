@@ -5,21 +5,48 @@ import httpx
 
 
 class llmRouter:
-    def __init__(self) -> None:
-        config_path = os.path.join(
-            os.path.dirname(__file__), "..", "config", "api.local.json"
-        )
-        with open(config_path, "r") as f:
-            api = json.load(f)
-        self._api = self.decompose(api)
-        self._client = httpx.Client(timeout=60.0)
+    def __init__(self, config, priority: str = "") -> None:
+        # Explicit config injection (no package-relative file lookups), so the
+        # router works the same whether run from a checkout or pip-installed.
+        # `config` is either a list of model dicts or a path to a JSON file.
+        if config is None:
+            raise ValueError(
+                "llmRouter requires a model config: pass a list of model dicts "
+                "or a path to a JSON file describing them."
+            )
+        if isinstance(config, (str, os.PathLike)):
+            with open(config, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        self._api = self.decompose(config, priority)
+        self._asyncClient: Optional[httpx.AsyncClient] = None
+
+    async def _getClient(self) -> httpx.AsyncClient:
+        if self._asyncClient is None or self._asyncClient.is_closed:
+            self._asyncClient = httpx.AsyncClient(timeout=60.0)
+        return self._asyncClient
+
+    async def close(self) -> None:
+        if self._asyncClient and not self._asyncClient.is_closed:
+            await self._asyncClient.aclose()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        await self.close()
 
     def getApi(self, modelName: str) -> Optional[dict]:
         if modelName in self._api["models"]:
             return self._api["models"][modelName]
         return None
 
-    def connect(
+    def getMinInputToken(self) -> int:
+        return min(api["maxInputToken"] for api in self._api["models"].values())
+
+    def getMaxInputToken(self) -> int:
+        return max(api["maxInputToken"] for api in self._api["models"].values())
+
+    async def connect(
         self, inputStr: str, modelName: str = None, priority: str = "", inputToken=0
     ):
         if modelName:
@@ -35,9 +62,13 @@ class llmRouter:
             if not api:
                 continue
             try:
-                if inputToken > int(api[model_name]["maxInputToken"]):
+                if inputToken > int(api["maxInputToken"]):
+                    errors.append(
+                        f"{model_name}: skipped, input {inputToken} tokens "
+                        f"exceeds maxInputToken {api['maxInputToken']}"
+                    )
                     continue
-                answer = self._callLLM(api, inputStr)
+                answer = await self._callLLM(api, inputStr)
                 return answer
             except Exception as e:
                 errors.append(f"{model_name}: {str(e)}")
@@ -55,17 +86,18 @@ class llmRouter:
             return self.priorityAlgorithmByTaskComplex(models, inputStr)
         return self.priorityAlgorithm(models)
 
-    def _callLLM(self, api: dict, inputStr: str) -> str:
+    async def _callLLM(self, api: dict, inputStr: str) -> str:
         protocol = api.get("protocol", "openai")
         if protocol == "anthropic":
-            return self._callAnthropic(api, inputStr)
+            return await self._callAnthropic(api, inputStr)
         elif protocol == "google":
-            return self._callGoogle(api, inputStr)
+            return await self._callGoogle(api, inputStr)
         elif protocol == "ollama":
-            return self._callOllama(api, inputStr)
-        return self._callOpenAI(api, inputStr)
+            return await self._callOllama(api, inputStr)
+        return await self._callOpenAI(api, inputStr)
 
-    def _callOpenAI(self, api: dict, inputStr: str) -> str:
+    async def _callOpenAI(self, api: dict, inputStr: str) -> str:
+        client = await self._getClient()
         url = api["endpointUrl"].rstrip("/")
         headers = {
             "Authorization": f"Bearer {api['apiKey']}",
@@ -74,14 +106,16 @@ class llmRouter:
         payload = {
             "model": api["modelName"],
             "messages": [{"role": "user", "content": inputStr}],
+            "max_tokens": api["maxOutputToken"],
         }
 
-        response = self._client.post(url, json=payload, headers=headers)
+        response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
         return data["choices"][0]["message"]["content"]
 
-    def _callAnthropic(self, api: dict, inputStr: str) -> str:
+    async def _callAnthropic(self, api: dict, inputStr: str) -> str:
+        client = await self._getClient()
         url = api["endpointUrl"].rstrip("/")
         headers = {
             "x-api-key": api["apiKey"],
@@ -94,7 +128,7 @@ class llmRouter:
             "messages": [{"role": "user", "content": inputStr}],
         }
 
-        response = self._client.post(url, json=payload, headers=headers)
+        response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
         for item in data["content"]:
@@ -102,30 +136,36 @@ class llmRouter:
                 return item["text"]
         raise Exception("No text content in response")
 
-    def _callGoogle(self, api: dict, inputStr: str) -> str:
+    async def _callGoogle(self, api: dict, inputStr: str) -> str:
+        client = await self._getClient()
         base_url = api["endpointUrl"].rstrip("/")
         url = f"{base_url}/v1beta/models/{api['modelName']}:generateContent"
         headers = {
             "Content-Type": "application/json",
             "x-goog-api-key": api["apiKey"],
         }
-        payload = {"contents": [{"parts": [{"text": inputStr}]}]}
+        payload = {
+            "contents": [{"parts": [{"text": inputStr}]}],
+            "generationConfig": {"maxOutputTokens": api["maxOutputToken"]},
+        }
 
-        response = self._client.post(url, json=payload, headers=headers)
+        response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
         return data["candidates"][0]["content"]["parts"][0]["text"]
 
-    def _callOllama(self, api: dict, inputStr: str) -> str:
+    async def _callOllama(self, api: dict, inputStr: str) -> str:
+        client = await self._getClient()
         url = api["endpointUrl"].rstrip("/")
         headers = {"Content-Type": "application/json"}
         payload = {
             "model": api["modelName"],
             "messages": [{"role": "user", "content": inputStr}],
             "stream": False,
+            "options": {"num_predict": api["maxOutputToken"]},
         }
 
-        response = self._client.post(url, json=payload, headers=headers, timeout=120.0)
+        response = await client.post(url, json=payload, headers=headers, timeout=120.0)
         response.raise_for_status()
         data = response.json()
         return data["message"]["content"]

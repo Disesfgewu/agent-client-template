@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "disesfgewu-agent"
+version = "0.1.0"
+description = "A skills-driven, multi-provider LLM agent client (OpenAI / Anthropic / Google / Ollama)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "disesfgewu" }]
+keywords = ["llm", "agent", "rag", "skills", "openai", "anthropic", "ollama"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "httpx>=0.27.0",
+    "openai>=1.0.0",
+    "faiss-cpu>=1.7.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.0",
+    "pypdf>=3.0.0",
+    "openpyxl>=3.1.0",
+    "python-docx>=0.8.11",
+    "python-pptx>=0.6.21",
+    "tiktoken>=0.5.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/disesfgewu/agent-client-template"
+Repository = "https://github.com/disesfgewu/agent-client-template"
+
+[project.optional-dependencies]
+dev = ["build", "twine"]
+
+[tool.setuptools]
+packages = ["disesfgewuAgent"]

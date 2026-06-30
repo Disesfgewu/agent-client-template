@@ -3,6 +3,7 @@ config/api.local.json
 config/skills.json
 .env
 README.pdf
+history/
 
 __pycache__/
 *.pyc

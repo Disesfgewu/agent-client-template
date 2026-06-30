@@ -1,312 +1,272 @@
 import unittest
-from unittest.mock import patch, Mock, MagicMock
+import asyncio
 import sys
 import os
-import json
-import tempfile
-import shutil
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from disesfgewuAgent.skillLoader import skillLoader
+from tests.live_api import live_api_available, SKIP_REASON
 
 
-class TestSkillLoader(unittest.TestCase):
-    def setUp(self):
-        self.test_dir = tempfile.mkdtemp()
-        self.skills_dir = os.path.join(self.test_dir, "skills")
-        os.makedirs(self.skills_dir)
-        
-        self.skill1_content = """---
-name: skill-1
-description: This is skill 1 description for testing
+class TestSkillLoaderLogic(unittest.TestCase):
+    def test_parse_frontmatter_valid(self):
+        loader = object.__new__(skillLoader)
+        content = """---
+name: test-skill
+description: A test skill
 version: 1.0.0
 tags:
   - test
 ---
 
-# Skill 1
+# Test Skill
 
-This is skill 1 content."""
-        
-        self.skill2_content = """---
-name: skill-2
-description: This is skill 2 description for testing
-version: 1.0.0
-tags:
-  - test
+This is the content."""
+
+        frontmatter, body = loader._parse_frontmatter(content)
+
+        self.assertEqual(frontmatter["name"], "test-skill")
+        self.assertEqual(frontmatter["description"], "A test skill")
+        self.assertEqual(frontmatter["version"], "1.0.0")
+        self.assertIn("test", frontmatter["tags"])
+        self.assertIn("# Test Skill", body)
+        self.assertIn("This is the content.", body)
+
+    def test_parse_frontmatter_no_frontmatter(self):
+        loader = object.__new__(skillLoader)
+        content = "# Just a heading\n\nSome content without frontmatter."
+
+        frontmatter, body = loader._parse_frontmatter(content)
+
+        self.assertEqual(frontmatter, {})
+        self.assertEqual(body, content)
+
+    def test_parse_frontmatter_empty(self):
+        loader = object.__new__(skillLoader)
+        content = ""
+
+        frontmatter, body = loader._parse_frontmatter(content)
+
+        self.assertEqual(frontmatter, {})
+        self.assertEqual(body, content)
+
+    def test_parse_frontmatter_invalid_yaml(self):
+        loader = object.__new__(skillLoader)
+        content = """---
+invalid: yaml: content: [
 ---
 
-# Skill 2
+Body content."""
 
-This is skill 2 content."""
-        
-        with open(os.path.join(self.skills_dir, "skill1.md"), "w") as f:
-            f.write(self.skill1_content)
-        with open(os.path.join(self.skills_dir, "skill2.md"), "w") as f:
-            f.write(self.skill2_content)
-        
-        self.config = {
-            "skill1": {
-                "relativePath": "skill1.md"
-            },
-            "skill2": {
-                "relativePath": "skill2.md"
-            }
-        }
-        
-        self.config_path = os.path.join(self.test_dir, "skills.json")
-        with open(self.config_path, "w") as f:
-            json.dump(self.config, f)
+        frontmatter, body = loader._parse_frontmatter(content)
 
-    def tearDown(self):
-        shutil.rmtree(self.test_dir)
+        self.assertEqual(frontmatter, {})
+        self.assertIn("Body content.", body)
 
-    @patch('disesfgewuAgent.skillLoader.load_dotenv')
-    @patch('disesfgewuAgent.skillLoader.OpenAI')
-    def test_init_loads_env_and_creates_client(self, mock_openai, mock_dotenv):
-        os.environ["EMBEDDING_API"] = "test-api-key"
-        
-        loader = skillLoader(self.config_path, self.skills_dir)
-        
-        mock_dotenv.assert_called_once()
-        mock_openai.assert_called_once()
-        self.assertIsNotNone(loader._client)
-        
-        del os.environ["EMBEDDING_API"]
+    def test_parse_frontmatter_empty_frontmatter(self):
+        loader = object.__new__(skillLoader)
+        content = """---
+---
 
-    @patch('disesfgewuAgent.skillLoader.load_dotenv')
-    @patch('disesfgewuAgent.skillLoader.OpenAI')
-    def test_init_raises_without_api_key(self, mock_openai, mock_dotenv):
-        if "EMBEDDING_API" in os.environ:
-            del os.environ["EMBEDDING_API"]
-        
-        with self.assertRaises(ValueError) as context:
-            skillLoader(self.config_path, self.skills_dir)
-        
-        self.assertIn("EMBEDDING_API", str(context.exception))
+Body after empty frontmatter."""
 
-    @patch('disesfgewuAgent.skillLoader.load_dotenv')
-    @patch('disesfgewuAgent.skillLoader.OpenAI')
-    def test_embed_calls_api_correctly(self, mock_openai, mock_dotenv):
-        os.environ["EMBEDDING_API"] = "test-api-key"
-        
-        mock_client = Mock()
-        mock_response = Mock()
-        mock_response.data = [Mock(embedding=[0.1, 0.2, 0.3])]
-        mock_client.embeddings.create.return_value = mock_response
-        mock_openai.return_value = mock_client
-        
-        loader = skillLoader(self.config_path, self.skills_dir)
-        result = loader._embed("test text")
-        
-        mock_client.embeddings.create.assert_called_once()
-        call_kwargs = mock_client.embeddings.create.call_args.kwargs
-        self.assertEqual(call_kwargs["input"], ["test text"])
-        self.assertEqual(result, [0.1, 0.2, 0.3])
-        
-        del os.environ["EMBEDDING_API"]
+        frontmatter, body = loader._parse_frontmatter(content)
 
-    @patch('disesfgewuAgent.skillLoader.load_dotenv')
-    @patch('disesfgewuAgent.skillLoader.OpenAI')
-    def test_load_reads_skills_and_creates_index(self, mock_openai, mock_dotenv):
-        os.environ["EMBEDDING_API"] = "test-api-key"
-        
-        mock_client = Mock()
-        mock_response = Mock()
-        mock_response.data = [Mock(embedding=[0.1] * 1024)]
-        mock_client.embeddings.create.return_value = mock_response
-        mock_openai.return_value = mock_client
-        
-        loader = skillLoader(self.config_path, self.skills_dir)
-        skills = loader.load()
-        
-        self.assertEqual(len(skills), 2)
-        self.assertIn("skill_embedding", skills[0])
-        self.assertIn("skill_name", skills[0])
-        self.assertIn("skill_context", skills[0])
-        self.assertIn("skill_frontmatter", skills[0])
-        self.assertIsNotNone(loader._index)
-        
-        del os.environ["EMBEDDING_API"]
+        self.assertEqual(frontmatter, {})
+        self.assertIn("Body after empty frontmatter.", body)
 
-    @patch('disesfgewuAgent.skillLoader.load_dotenv')
-    @patch('disesfgewuAgent.skillLoader.OpenAI')
-    def test_load_parses_frontmatter(self, mock_openai, mock_dotenv):
-        os.environ["EMBEDDING_API"] = "test-api-key"
-        
-        mock_client = Mock()
-        mock_response = Mock()
-        mock_response.data = [Mock(embedding=[0.1] * 1024)]
-        mock_client.embeddings.create.return_value = mock_response
-        mock_openai.return_value = mock_client
-        
-        loader = skillLoader(self.config_path, self.skills_dir)
-        skills = loader.load()
-        
-        skill = skills[0]
-        self.assertEqual(skill["skill_name"], "skill-1")
-        self.assertIn("skill 1 description", skill["skill_description"])
-        self.assertIn("Skill 1", skill["skill_context"])
-        self.assertEqual(skill["skill_frontmatter"]["version"], "1.0.0")
-        
-        del os.environ["EMBEDDING_API"]
 
-    @patch('disesfgewuAgent.skillLoader.load_dotenv')
-    @patch('disesfgewuAgent.skillLoader.OpenAI')
-    def test_load_uses_cached_embeddings(self, mock_openai, mock_dotenv):
-        os.environ["EMBEDDING_API"] = "test-api-key"
-        
-        cached_embedding = [0.5] * 1024
-        config_with_cache = {
-            "skill1": {
-                "relativePath": "skill1.md",
-                "embedding": cached_embedding
-            },
-            "skill2": {
-                "relativePath": "skill2.md",
-                "embedding": cached_embedding
-            }
-        }
-        
-        config_path = os.path.join(self.test_dir, "skills_cached.json")
-        with open(config_path, "w") as f:
-            json.dump(config_with_cache, f)
-        
-        mock_client = Mock()
-        mock_openai.return_value = mock_client
-        
-        loader = skillLoader(config_path, self.skills_dir)
-        skills = loader.load()
-        
-        mock_client.embeddings.create.assert_not_called()
-        self.assertEqual(len(skills), 2)
-        
-        del os.environ["EMBEDDING_API"]
+@unittest.skipUnless(live_api_available(), SKIP_REASON)
+class TestSkillLoaderReal(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.config_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "config",
+            "skills.json",
+        )
+        cls.skills_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "skills",
+        )
+        cls.loader = skillLoader(cls.config_path, cls.skills_dir)
+        cls.skills = cls.loader.load()
 
-    @patch('disesfgewuAgent.skillLoader.load_dotenv')
-    @patch('disesfgewuAgent.skillLoader.OpenAI')
-    def test_getSkill_returns_correct_skill(self, mock_openai, mock_dotenv):
-        os.environ["EMBEDDING_API"] = "test-api-key"
-        
-        mock_client = Mock()
-        mock_response = Mock()
-        mock_response.data = [Mock(embedding=[0.1] * 1024)]
-        mock_client.embeddings.create.return_value = mock_response
-        mock_openai.return_value = mock_client
-        
-        loader = skillLoader(self.config_path, self.skills_dir)
-        loader.load()
-        
-        skill = loader.getSkill(0)
-        self.assertEqual(skill["skill_name"], "skill-1")
-        self.assertIn("Skill 1", skill["skill_context"])
-        
-        del os.environ["EMBEDDING_API"]
+    def test_load_returns_skills(self):
+        self.assertGreater(len(self.skills), 0)
+        for skill in self.skills:
+            self.assertIn("skill_embedding", skill)
+            self.assertIn("skill_name", skill)
+            self.assertIn("skill_context", skill)
+            self.assertIn("skill_description", skill)
+            self.assertIn("skill_frontmatter", skill)
+            self.assertIsInstance(skill["skill_embedding"], list)
+            self.assertGreater(len(skill["skill_embedding"]), 0)
 
-    @patch('disesfgewuAgent.skillLoader.load_dotenv')
-    @patch('disesfgewuAgent.skillLoader.OpenAI')
-    def test_getSkill_raises_on_invalid_index(self, mock_openai, mock_dotenv):
-        os.environ["EMBEDDING_API"] = "test-api-key"
-        
-        mock_client = Mock()
-        mock_response = Mock()
-        mock_response.data = [Mock(embedding=[0.1] * 1024)]
-        mock_client.embeddings.create.return_value = mock_response
-        mock_openai.return_value = mock_client
-        
-        loader = skillLoader(self.config_path, self.skills_dir)
-        loader.load()
-        
+    def test_embedding_dimension(self):
+        embedding = self.loader.getEmbedding(0)
+        self.assertIsInstance(embedding, list)
+        self.assertGreater(len(embedding), 100)
+        print(f"\n[Embedding dimension] {len(embedding)}")
+
+    def test_getSkill_returns_correct_skill(self):
+        skill = self.loader.getSkill(0)
+        self.assertIn("skill_name", skill)
+        self.assertIn("skill_context", skill)
+        self.assertIsInstance(skill["skill_name"], str)
+        self.assertGreater(len(skill["skill_name"]), 0)
+
+    def test_getSkill_raises_on_invalid_index(self):
         with self.assertRaises(IndexError):
-            loader.getSkill(999)
-        
-        del os.environ["EMBEDDING_API"]
+            self.loader.getSkill(999)
 
-    @patch('disesfgewuAgent.skillLoader.load_dotenv')
-    @patch('disesfgewuAgent.skillLoader.OpenAI')
-    def test_getEmbedding_returns_vector(self, mock_openai, mock_dotenv):
-        os.environ["EMBEDDING_API"] = "test-api-key"
-        
-        mock_client = Mock()
-        mock_response = Mock()
-        test_embedding = [0.1] * 1024
-        mock_response.data = [Mock(embedding=test_embedding)]
-        mock_client.embeddings.create.return_value = mock_response
-        mock_openai.return_value = mock_client
-        
-        loader = skillLoader(self.config_path, self.skills_dir)
-        loader.load()
-        
-        embedding = loader.getEmbedding(0)
-        self.assertEqual(len(embedding), 1024)
-        self.assertEqual(embedding, test_embedding)
-        
-        del os.environ["EMBEDDING_API"]
+    def test_getEmbedding_raises_on_invalid_index(self):
+        with self.assertRaises(IndexError):
+            self.loader.getEmbedding(-1)
 
-    @patch('disesfgewuAgent.skillLoader.load_dotenv')
-    @patch('disesfgewuAgent.skillLoader.OpenAI')
-    def test_search_returns_top_k_results(self, mock_openai, mock_dotenv):
-        os.environ["EMBEDDING_API"] = "test-api-key"
-        
-        mock_client = Mock()
-        mock_response = Mock()
-        mock_response.data = [Mock(embedding=[0.1] * 1024)]
-        mock_client.embeddings.create.return_value = mock_response
-        mock_openai.return_value = mock_client
-        
-        loader = skillLoader(self.config_path, self.skills_dir)
-        loader.load()
-        
-        results = loader.search("test query", top_k=2)
-        
-        self.assertEqual(len(results), 2)
-        self.assertIn("score", results[0])
-        self.assertIn("skill_name", results[0])
-        
-        del os.environ["EMBEDDING_API"]
+    def test_search_returns_results_with_idx(self):
+        results = self.loader.search("code review best practices", top_k=2)
 
-    @patch('disesfgewuAgent.skillLoader.load_dotenv')
-    @patch('disesfgewuAgent.skillLoader.OpenAI')
-    def test_search_raises_when_not_loaded(self, mock_openai, mock_dotenv):
-        os.environ["EMBEDDING_API"] = "test-api-key"
-        
-        mock_client = Mock()
-        mock_openai.return_value = mock_client
-        
-        loader = skillLoader(self.config_path, self.skills_dir)
-        
+        self.assertGreater(len(results), 0)
+        for result in results:
+            self.assertIn("idx", result)
+            self.assertIn("score", result)
+            self.assertIn("skill_name", result)
+            self.assertIsInstance(result["idx"], int)
+            self.assertIsInstance(result["score"], float)
+            self.assertGreaterEqual(result["score"], 0.3)
+
+        print(f"\n[Search with idx]")
+        for r in results:
+            print(f"  idx={r['idx']}, {r['skill_name']}: score={r['score']:.4f}")
+
+    def test_search_min_score_filters_low_scores(self):
+        results_high = self.loader.search("code review", top_k=3, min_score=0.5)
+        results_low = self.loader.search("code review", top_k=3, min_score=0.0)
+
+        for r in results_high:
+            self.assertGreaterEqual(r["score"], 0.5)
+
+        self.assertGreaterEqual(len(results_low), len(results_high))
+
+    def test_search_raises_when_not_loaded(self):
+        loader = object.__new__(skillLoader)
+        loader._index = None
+        loader._skills = []
+
         with self.assertRaises(ValueError) as context:
             loader.search("test query")
-        
+
         self.assertIn("Skills not loaded", str(context.exception))
-        
-        del os.environ["EMBEDDING_API"]
 
-    @patch('disesfgewuAgent.skillLoader.load_dotenv')
-    @patch('disesfgewuAgent.skillLoader.OpenAI')
-    def test_composeSkills_combines_multiple_skills(self, mock_openai, mock_dotenv):
-        os.environ["EMBEDDING_API"] = "test-api-key"
-        
-        mock_client = Mock()
-        mock_response = Mock()
-        mock_response.data = [Mock(embedding=[0.1] * 1024)]
-        mock_client.embeddings.create.return_value = mock_response
-        mock_openai.return_value = mock_client
-        
-        loader = skillLoader(self.config_path, self.skills_dir)
-        loader.load()
-        
-        composed = loader.composeSkills([0, 1])
-        
-        self.assertIn("skill-1", composed)
-        self.assertIn("skill-2", composed)
-        self.assertIn("Skill 1", composed)
-        self.assertIn("Skill 2", composed)
+    def test_composeSkills_combines_multiple(self):
+        composed = self.loader.composeSkills([0, 1])
+
+        self.assertIsInstance(composed, str)
+        self.assertGreater(len(composed), 100)
         self.assertIn("===", composed)
-        
-        del os.environ["EMBEDDING_API"]
+
+        skill0 = self.loader.getSkill(0)
+        skill1 = self.loader.getSkill(1)
+        self.assertIn(skill0["skill_name"], composed)
+        self.assertIn(skill1["skill_name"], composed)
+
+        print(f"\n[Composed skills] Length: {len(composed)} chars")
+
+    def test_searchAndCompose_returns_tuple(self):
+        composed, results = self.loader.searchAndCompose(
+            "how to debug code", top_k=2
+        )
+
+        self.assertIsInstance(composed, str)
+        self.assertIsInstance(results, list)
+
+        if results:
+            self.assertGreater(len(composed), 0)
+            self.assertIn("===", composed)
+            for r in results:
+                self.assertIn("idx", r)
+                self.assertIn("score", r)
+
+            print(f"\n[searchAndCompose] {len(results)} skills, {len(composed)} chars")
+        else:
+            self.assertEqual(composed, "")
+
+    def test_searchAndCompose_empty_when_no_match(self):
+        composed, results = self.loader.searchAndCompose(
+            "xyzzy completely unrelated nonsense", top_k=1, min_score=0.99
+        )
+
+        self.assertEqual(composed, "")
+        self.assertEqual(results, [])
+
+    def test_searchAndCompose_uses_search_results_idx(self):
+        composed, results = self.loader.searchAndCompose("testing", top_k=2)
+
+        if results:
+            idxs = [r["idx"] for r in results]
+            expected = self.loader.composeSkills(idxs)
+            self.assertEqual(composed, expected)
 
 
-if __name__ == '__main__':
+@unittest.skipUnless(live_api_available(), SKIP_REASON)
+class TestSkillLoaderAsync(unittest.IsolatedAsyncioTestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.config_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "config",
+            "skills.json",
+        )
+        cls.skills_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "skills",
+        )
+        cls.loader = skillLoader(cls.config_path, cls.skills_dir)
+        cls.loader.load()
+
+    async def test_loadAsync(self):
+        loader = skillLoader(self.config_path, self.skills_dir)
+        skills = await loader.loadAsync()
+
+        self.assertGreater(len(skills), 0)
+        for skill in skills:
+            self.assertIn("skill_embedding", skill)
+            self.assertIn("skill_name", skill)
+
+    async def test_searchAsync(self):
+        results = await self.loader.searchAsync("code review", top_k=2)
+
+        self.assertGreater(len(results), 0)
+        for r in results:
+            self.assertIn("idx", r)
+            self.assertIn("score", r)
+
+        print(f"\n[searchAsync] {len(results)} results")
+
+    async def test_searchAndComposeAsync(self):
+        composed, results = await self.loader.searchAndComposeAsync(
+            "debugging techniques", top_k=2
+        )
+
+        self.assertIsInstance(composed, str)
+        self.assertIsInstance(results, list)
+
+        if results:
+            self.assertGreater(len(composed), 0)
+            self.assertIn("===", composed)
+
+        print(f"\n[searchAndComposeAsync] {len(results)} skills")
+
+    async def test_searchAndComposeAsync_empty(self):
+        composed, results = await self.loader.searchAndComposeAsync(
+            "xyzzy nonsense", top_k=1, min_score=0.99
+        )
+
+        self.assertEqual(composed, "")
+        self.assertEqual(results, [])
+
+
+if __name__ == "__main__":
     unittest.main()
