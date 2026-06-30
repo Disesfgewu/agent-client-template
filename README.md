@@ -231,7 +231,7 @@ async def main():
 asyncio.run(main())
 ```
 
-`AgentClient(skillConfigPath, skillFolderPath, apiConfig, contextWindowSize=32000, historyDir=None, routingStrategy="taskComplex")`
+`AgentClient(skillConfigPath, skillFolderPath, apiConfig, contextWindowSize=32000, historyDir=None, routingStrategy="taskComplex", complexityScoreThreshold=3)`
 
 - `skillConfigPath` — path to `config/skills.json`.
 - `skillFolderPath` — path to the `skills/` directory.
@@ -243,6 +243,12 @@ asyncio.run(main())
 - `routingStrategy` — model-selection strategy: `"taskComplex"` (default,
   difficulty tiering), `"maxTokens"`, or `""` (config order). See
   [Configuration](#1-models--api-endpoints).
+- `complexityScoreThreshold` — score at/above which a task is treated as
+  complex (default `3`). Raise it to keep more tasks on the cheaper models.
+
+Whatever the order, the router always **skips models whose context window is
+too small for the input** and uses the first one that both ranks well and
+fits — so a long task never gets sent to a model that can't hold it.
 
 Passing config in-memory (no files needed):
 

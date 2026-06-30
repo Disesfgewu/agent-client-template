@@ -203,27 +203,41 @@ class TestAgentLogic(unittest.TestCase):
         self.agent._matchedSkillCount = 0
         self.assertFalse(self.agent._assessComplexity())
 
-    def test_assessComplexity_english_keywords(self):
-        self.agent._inputStr = "Analyze and refactor this design"
+    def test_assessComplexity_many_keywords_escalate(self):
+        self.agent._inputStr = "Analyze and refactor this design"  # 3 keywords
         self.agent._inputFiles = []
         self.agent._matchedSkillCount = 0
         self.assertTrue(self.agent._assessComplexity())
 
     def test_assessComplexity_chinese_keywords(self):
-        self.agent._inputStr = "幫我分析並推導這個演算法"
+        self.agent._inputStr = "幫我分析並推導這個演算法"  # 3 keywords
         self.agent._inputFiles = []
         self.agent._matchedSkillCount = 0
         self.assertTrue(self.agent._assessComplexity())
 
-    def test_assessComplexity_multiple_files(self):
+    def test_assessComplexity_few_keywords_stay_simple(self):
+        self.agent._inputStr = "analyze and compare this"  # only 2 keywords
+        self.agent._inputFiles = []
+        self.agent._matchedSkillCount = 0
+        self.assertFalse(self.agent._assessComplexity())
+
+    def test_assessComplexity_files_alone_stay_simple(self):
         self.agent._inputStr = "summarize"
-        self.agent._inputFiles = ["a.txt", "b.txt"]
+        self.agent._inputFiles = ["a.txt", "b.txt", "c.txt"]  # weak signal only
         self.agent._matchedSkillCount = 0
-        self.assertTrue(self.agent._assessComplexity())
+        self.assertFalse(self.agent._assessComplexity())
 
-    def test_assessComplexity_long_task(self):
-        self.agent._inputStr = "word " * 600
+    def test_assessComplexity_length_alone_stays_simple(self):
+        self.agent._inputStr = "word " * 2000  # long but no reasoning signal
         self.agent._inputFiles = []
+        self.agent._matchedSkillCount = 0
+        self.assertFalse(self.agent._assessComplexity())
+
+    def test_assessComplexity_combination_escalates(self):
+        # weak signals on their own stay simple, but together they escalate:
+        # 2 keywords (+2) plus 3+ files (+1) = 3
+        self.agent._inputStr = "analyze and compare the attached files"
+        self.agent._inputFiles = ["a.txt", "b.txt", "c.txt"]
         self.agent._matchedSkillCount = 0
         self.assertTrue(self.agent._assessComplexity())
 

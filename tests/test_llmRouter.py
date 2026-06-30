@@ -271,6 +271,40 @@ class TestLLMRouterTokenGuard(unittest.IsolatedAsyncioTestCase):
         self.assertIn("m2", msg)
         await router.close()
 
+    async def test_skips_too_small_and_picks_fitting_model(self):
+        router = self._router(
+            [
+                {
+                    "provider": "x",
+                    "endpointUrl": "http://x",
+                    "modelName": "small",
+                    "maxInputToken": 1000,
+                    "maxOutputToken": 100,
+                    "tier": 1,
+                },
+                {
+                    "provider": "x",
+                    "endpointUrl": "http://x",
+                    "modelName": "big",
+                    "maxInputToken": 500000,
+                    "maxOutputToken": 100,
+                    "tier": 1,
+                },
+            ]
+        )
+        called = []
+
+        async def fake_call(api, inputStr):
+            called.append(api["modelName"])
+            return "ok"
+
+        router._callLLM = fake_call
+        # input exceeds the 'small' window but fits 'big'
+        result = await router.connect("hello", inputToken=2000)
+        self.assertEqual(result, "ok")
+        self.assertEqual(called, ["big"])  # 'small' was filtered out by the fit guard
+        await router.close()
+
 
 @unittest.skipUnless(live_api_available(), SKIP_REASON)
 class TestLLMRouterAsyncLifecycle(unittest.IsolatedAsyncioTestCase):

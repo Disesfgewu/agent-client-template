@@ -15,11 +15,39 @@ from disesfgewuAgent.skillLoader import skillLoader
 # Reasoning-heavy words (English + Chinese) that hint at a harder task. Matched
 # as case-insensitive substrings against the RAW task only.
 COMPLEX_KEYWORDS = (
-    "analyze", "analyse", "prove", "design", "architect", "refactor",
-    "debug", "optimize", "optimise", "derive", "evaluate", "compare",
-    "implement", "algorithm", "step by step", "trade-off", "tradeoff",
-    "分析", "證明", "推導", "設計", "架構", "重構", "除錯", "優化",
-    "最佳化", "推理", "逐步", "比較", "評估", "演算法", "實作", "為什麼",
+    "analyze",
+    "analyse",
+    "prove",
+    "design",
+    "architect",
+    "refactor",
+    "debug",
+    "optimize",
+    "optimise",
+    "derive",
+    "evaluate",
+    "compare",
+    "implement",
+    "algorithm",
+    "step by step",
+    "trade-off",
+    "tradeoff",
+    "分析",
+    "證明",
+    "推導",
+    "設計",
+    "架構",
+    "重構",
+    "除錯",
+    "優化",
+    "最佳化",
+    "推理",
+    "逐步",
+    "比較",
+    "評估",
+    "演算法",
+    "實作",
+    "為什麼",
 )
 
 
@@ -32,6 +60,7 @@ class AgentClient:
         contextWindowSize: int = 32000,
         historyDir: Optional[str] = None,
         routingStrategy: str = "taskComplex",
+        complexityScoreThreshold: int = 3,
     ):
         # apiConfig: list of model dicts or path to a JSON file (injected, so the
         # package never reaches into its own install dir for user config).
@@ -54,8 +83,9 @@ class AgentClient:
         self._encoder = tiktoken.get_encoding("cl100k_base")
         self._logger = logging.getLogger(__name__)
 
-        # Score (from _assessComplexity) at/above which a task counts as complex.
-        self._complexityScoreThreshold = 2
+        # Score (from _assessComplexity) at/above which a task counts as
+        # complex. Higher = stay on cheap models for more tasks.
+        self._complexityScoreThreshold = complexityScoreThreshold
 
         self._resetState()
 
@@ -101,23 +131,24 @@ class AgentClient:
         # (self._inputStr) plus structural signals, NOT the assembled prompt —
         # the injected skill text is full of reasoning words and would skew
         # keyword matching toward "complex" for every task.
+        #
+        # Deliberately conservative: even the cheapest models are capable, so we
+        # stay on them by default and escalate only on strong evidence. Reasoning
+        # keywords are the primary signal; length / file count / skill count are
+        # weak nudges that do not escalate on their own.
         task = self._inputStr
         score = 0
 
-        task_tokens = self._countTokens(task)
-        if task_tokens > 500:
-            score += 2
-        elif task_tokens > 150:
-            score += 1
-
-        # More attached files / matched skills => more to synthesize.
-        score += min(len(self._inputFiles), 2)
-        if self._matchedSkillCount >= 2:
-            score += 1
-
         lowered = task.lower()
         keyword_hits = sum(1 for kw in COMPLEX_KEYWORDS if kw in lowered)
-        score += min(keyword_hits, 2)
+        score += min(keyword_hits, 3)
+
+        if self._countTokens(task) > 5000:
+            score += 1
+        if len(self._inputFiles) >= 3:
+            score += 1
+        if self._matchedSkillCount >= 3:
+            score += 1
 
         return score >= self._complexityScoreThreshold
 
@@ -210,9 +241,7 @@ class AgentClient:
         self._logger.info(f"Splitting into {len(chunks)} chunks")
 
         tasks = [
-            self._connect(
-                f"{fixed_section}[TASK - Part {i+1}/{len(chunks)}]\n{chunk}"
-            )
+            self._connect(f"{fixed_section}[TASK - Part {i+1}/{len(chunks)}]\n{chunk}")
             for i, chunk in enumerate(chunks)
         ]
         responses = await asyncio.gather(*tasks, return_exceptions=True)
@@ -227,19 +256,15 @@ class AgentClient:
 
         if errors:
             self._logger.warning(
-                f"{len(errors)}/{len(responses)} chunks failed: "
-                + "; ".join(errors)
+                f"{len(errors)}/{len(responses)} chunks failed: " + "; ".join(errors)
             )
 
         if not valid:
             raise Exception(
-                "All chunks failed during split processing:\n"
-                + "\n".join(errors)
+                "All chunks failed during split processing:\n" + "\n".join(errors)
             )
 
-        merged = "\n\n---\n\n".join(
-            f"[Part {i+1} Response]\n{r}" for i, r in valid
-        )
+        merged = "\n\n---\n\n".join(f"[Part {i+1} Response]\n{r}" for i, r in valid)
 
         merge_prompt = (
             f"{fixed_section}\n"
@@ -265,7 +290,9 @@ class AgentClient:
         if prompt_tokens <= available:
             return await self._connect(prompt)
 
-        self._logger.info(f"Prompt too large ({prompt_tokens} > {available}), splitting")
+        self._logger.info(
+            f"Prompt too large ({prompt_tokens} > {available}), splitting"
+        )
         return await self._splitAndProcess(prompt, available)
 
     def _parseSignal(self, response: str) -> dict:
