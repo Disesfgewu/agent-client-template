@@ -64,7 +64,8 @@ agent-client-template/
 │   └── testing.md
 ├── history/                  # per-session JSON logs (gitignored)
 ├── tests/                    # unit + live integration tests
-├── example.py                # runnable end-to-end demo
+├── example.py                # runnable end-to-end demo (scripted)
+├── demo.py                   # interactive CLI chat bot
 ├── pyproject.toml            # packaging metadata (pip install .)
 ├── .env.example              # template: copy to .env
 └── requirements.txt
@@ -201,7 +202,15 @@ The `skills.json` index is the source of truth for which skills exist; the
 
 ## Usage
 
-See [`example.py`](example.py) for a complete script. The essentials:
+For an interactive REPL, run the CLI chat bot:
+
+```bash
+python demo.py
+```
+
+It keeps a short conversation history, supports `/file <path>` to attach a
+document, `/reset`, and `/exit`. See [`example.py`](example.py) for a scripted
+end-to-end example. The essentials:
 
 ```python
 import asyncio
