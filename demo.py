@@ -101,27 +101,34 @@ async def main() -> None:
                 pending_files.clear()
                 print("(conversation cleared)\n")
                 continue
-            if user_msg.startswith("/file "):
-                path = user_msg[len("/file "):].strip().strip('"')
+            if user_msg == "/file" or user_msg.startswith("/file "):
+                parts = user_msg.split(maxsplit=1)
+                if len(parts) < 2 or not parts[1].strip():
+                    print("(usage: /file <path>)\n")
+                    continue
+                path = parts[1].strip().strip('"').strip("'")
                 if os.path.exists(path):
                     pending_files.append(path)
                     print(f"(attached {os.path.basename(path)})\n")
                 else:
                     print(f"(file not found: {path})\n")
                 continue
+            if user_msg.startswith("/"):
+                print("(unknown command - type /help)\n")
+                continue
 
             prompt = _build_input(history, user_msg)
             files = pending_files[:]
             pending_files.clear()
 
-            print("bot > ", end="", flush=True)
+            print("(thinking...)", flush=True)
             try:
                 answer = await agent.ask(prompt, inputFiles=files)
             except Exception as e:
-                print(f"[error] {e}\n")
+                print(f"bot > [error] {e}\n")
                 continue
 
-            print(f"{answer}\n")
+            print(f"bot > {answer}\n")
             history.append(("User", user_msg))
             history.append(("Assistant", answer))
 
