@@ -12,6 +12,16 @@ from disesfgewuAgent.inputFileManager import inputFileManager
 from disesfgewuAgent.llmRouter import llmRouter
 from disesfgewuAgent.skillLoader import skillLoader
 
+# Reasoning-heavy words (English + Chinese) that hint at a harder task. Matched
+# as case-insensitive substrings against the RAW task only.
+COMPLEX_KEYWORDS = (
+    "analyze", "analyse", "prove", "design", "architect", "refactor",
+    "debug", "optimize", "optimise", "derive", "evaluate", "compare",
+    "implement", "algorithm", "step by step", "trade-off", "tradeoff",
+    "分析", "證明", "推導", "設計", "架構", "重構", "除錯", "優化",
+    "最佳化", "推理", "逐步", "比較", "評估", "演算法", "實作", "為什麼",
+)
+
 
 class AgentClient:
     def __init__(
@@ -44,6 +54,9 @@ class AgentClient:
         self._encoder = tiktoken.get_encoding("cl100k_base")
         self._logger = logging.getLogger(__name__)
 
+        # Score (from _assessComplexity) at/above which a task counts as complex.
+        self._complexityScoreThreshold = 2
+
         self._resetState()
 
     def _resetState(self) -> None:
@@ -58,6 +71,8 @@ class AgentClient:
         self._skillCacheToken = 0
         self._inputStr = ""
         self._history = []
+        self._matchedSkillCount = 0
+        self._taskIsComplex = False
 
     def _countTokens(self, text: str) -> int:
         return len(self._encoder.encode(text))
@@ -74,15 +89,43 @@ class AgentClient:
         composed, results = await self._skillLoader.searchAndComposeAsync(
             self._inputStr
         )
+        self._matchedSkillCount = len(results)
         if composed:
             self._skillCache = f"[SKILLS]\n{composed}"
         else:
             self._skillCache = ""
         self._skillCacheToken = self._countTokens(self._skillCache)
 
+    def _assessComplexity(self) -> bool:
+        # Composite, zero-cost difficulty heuristic. Scored on the RAW task
+        # (self._inputStr) plus structural signals, NOT the assembled prompt —
+        # the injected skill text is full of reasoning words and would skew
+        # keyword matching toward "complex" for every task.
+        task = self._inputStr
+        score = 0
+
+        task_tokens = self._countTokens(task)
+        if task_tokens > 500:
+            score += 2
+        elif task_tokens > 150:
+            score += 1
+
+        # More attached files / matched skills => more to synthesize.
+        score += min(len(self._inputFiles), 2)
+        if self._matchedSkillCount >= 2:
+            score += 1
+
+        lowered = task.lower()
+        keyword_hits = sum(1 for kw in COMPLEX_KEYWORDS if kw in lowered)
+        score += min(keyword_hits, 2)
+
+        return score >= self._complexityScoreThreshold
+
     async def _connect(self, inputFull: str) -> str:
         inputToken = self._countTokens(inputFull)
-        return await self._router.connect(inputFull, inputToken=inputToken)
+        return await self._router.connect(
+            inputFull, inputToken=inputToken, isComplex=self._taskIsComplex
+        )
 
     def _buildPrompt(self, informations: str = "") -> str:
         sections = []
@@ -124,6 +167,11 @@ class AgentClient:
             )
 
         await self._getSkills()
+
+        self._taskIsComplex = self._assessComplexity()
+        self._logger.info(
+            f"Task assessed as {'complex' if self._taskIsComplex else 'simple'}"
+        )
 
     def _splitTaskInputAlgorithm(self, text: str, chunk_token_budget: int) -> list:
         tokens = self._encoder.encode(text)

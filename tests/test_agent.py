@@ -197,6 +197,36 @@ class TestAgentLogic(unittest.TestCase):
         text = "short text"
         self.assertEqual(self.agent._truncateToTokens(text, 1000), text)
 
+    def test_assessComplexity_simple_short_task(self):
+        self.agent._inputStr = "What is 2+2?"
+        self.agent._inputFiles = []
+        self.agent._matchedSkillCount = 0
+        self.assertFalse(self.agent._assessComplexity())
+
+    def test_assessComplexity_english_keywords(self):
+        self.agent._inputStr = "Analyze and refactor this design"
+        self.agent._inputFiles = []
+        self.agent._matchedSkillCount = 0
+        self.assertTrue(self.agent._assessComplexity())
+
+    def test_assessComplexity_chinese_keywords(self):
+        self.agent._inputStr = "幫我分析並推導這個演算法"
+        self.agent._inputFiles = []
+        self.agent._matchedSkillCount = 0
+        self.assertTrue(self.agent._assessComplexity())
+
+    def test_assessComplexity_multiple_files(self):
+        self.agent._inputStr = "summarize"
+        self.agent._inputFiles = ["a.txt", "b.txt"]
+        self.agent._matchedSkillCount = 0
+        self.assertTrue(self.agent._assessComplexity())
+
+    def test_assessComplexity_long_task(self):
+        self.agent._inputStr = "word " * 600
+        self.agent._inputFiles = []
+        self.agent._matchedSkillCount = 0
+        self.assertTrue(self.agent._assessComplexity())
+
 
 @unittest.skipUnless(live_api_available(), SKIP_REASON)
 class TestAgentReal(unittest.IsolatedAsyncioTestCase):

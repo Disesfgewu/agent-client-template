@@ -125,10 +125,13 @@ cp .env.example              .env
 decides the order in which models are tried; `connect()` then skips any whose
 window can't hold the input and uses the first that succeeds:
 
-- `"taskComplex"` (default) — **difficulty tiering**: short prompts try the
-  lowest-`tier` (cheapest) model first to save cost; long prompts (over
-  `complexityThreshold` chars, default 4000) try the highest-`tier` (most
-  capable) model first. Ties broken by window size.
+- `"taskComplex"` (default) — **difficulty tiering**: easy tasks try the
+  lowest-`tier` (cheapest) model first to save cost; hard tasks try the
+  highest-`tier` (most capable) first. Difficulty is a free, composite
+  heuristic scored over the *raw task only* (its token length, number of
+  attached files, number of matched skills, and reasoning keywords in English
+  and Chinese) — so injected skill text doesn't skew it. Ties broken by window
+  size. No extra API call is made.
 - `"maxTokens"` — always prefer the largest context window.
 - `""` — use config order as-is (the list is the priority).
 

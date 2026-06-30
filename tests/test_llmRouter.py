@@ -178,6 +178,26 @@ class TestLLMRouterLogic(unittest.TestCase):
             router.priorityAlgorithmByTaskComplex(models, "x" * 500)[0], "big"
         )
 
+    def test_taskComplex_explicit_isComplex_overrides_length(self):
+        router = object.__new__(llmRouter)
+        router._complexity_threshold = 100
+        models = {
+            "cheap": {"maxInputToken": 8000, "tier": 1},
+            "strong": {"maxInputToken": 200000, "tier": 3},
+        }
+        # short text but explicitly complex -> strong first
+        self.assertEqual(
+            router.priorityAlgorithmByTaskComplex(models, "hi", isComplex=True)[0],
+            "strong",
+        )
+        # long text but explicitly simple -> cheap first
+        self.assertEqual(
+            router.priorityAlgorithmByTaskComplex(
+                models, "x" * 500, isComplex=False
+            )[0],
+            "cheap",
+        )
+
     def test_getMinInputToken(self):
         router = object.__new__(llmRouter)
         router._api = router.decompose(self.sample_config)

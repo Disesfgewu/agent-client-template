@@ -53,14 +53,19 @@ class llmRouter:
         return max(api["maxInputToken"] for api in self._api["models"].values())
 
     async def connect(
-        self, inputStr: str, modelName: str = None, priority: str = "", inputToken=0
+        self,
+        inputStr: str,
+        modelName: str = None,
+        priority: str = "",
+        inputToken=0,
+        isComplex=None,
     ):
         if modelName:
             if not self.getApi(modelName):
                 raise ValueError(f"Model '{modelName}' not found in config")
             priority_list = [modelName]
         else:
-            priority_list = self._getPriorityList(inputStr, priority)
+            priority_list = self._getPriorityList(inputStr, priority, isComplex)
 
         errors = []
         for model_name in priority_list:
@@ -83,13 +88,15 @@ class llmRouter:
         error_msg = "All LLM endpoints failed:\n" + "\n".join(errors)
         raise Exception(error_msg)
 
-    def _getPriorityList(self, inputStr: str, priority: str = "") -> list:
+    def _getPriorityList(
+        self, inputStr: str, priority: str = "", isComplex=None
+    ) -> list:
         strategy = priority or self._priority_strategy
         models = self._api["models"]
         if strategy == "maxTokens":
             return self.priorityAlgorithmByMaxTokens(models)
         elif strategy == "taskComplex":
-            return self.priorityAlgorithmByTaskComplex(models, inputStr)
+            return self.priorityAlgorithmByTaskComplex(models, inputStr, isComplex)
         return self.priorityAlgorithm(models)
 
     async def _callLLM(self, api: dict, inputStr: str) -> str:
@@ -208,18 +215,22 @@ class llmRouter:
         )
         return [name for name, _ in sorted_models]
 
-    def priorityAlgorithmByTaskComplex(self, models: dict, inputStr: str) -> list:
-        # Difficulty heuristic: a longer prompt means more context to handle, so
-        # it is treated as harder. Hard tasks prefer higher-tier (more capable)
-        # models; easy tasks prefer the lowest-tier model first to save cost.
-        # Within the same tier we break ties by window size (bigger first for
-        # hard tasks, smaller first for easy ones). The token-fit guard in
+    def priorityAlgorithmByTaskComplex(
+        self, models: dict, inputStr: str, isComplex=None
+    ) -> list:
+        # Hard tasks prefer higher-tier (more capable) models; easy tasks prefer
+        # the lowest-tier model first to save cost. Within a tier, ties break by
+        # window size (bigger first for hard tasks). The token-fit guard in
         # connect() still drops any model whose window cannot hold the input.
-        threshold = getattr(self, "_complexity_threshold", 4000)
-        complex_task = len(inputStr) > threshold
+        #
+        # isComplex is decided by the caller from richer signals (see
+        # AgentClient._assessComplexity). When not provided we fall back to a
+        # crude prompt-length check so the router still works standalone.
+        if isComplex is None:
+            isComplex = len(inputStr) > getattr(self, "_complexity_threshold", 4000)
         sorted_models = sorted(
             models.items(),
             key=lambda x: (x[1].get("tier", 2), x[1]["maxInputToken"]),
-            reverse=complex_task,
+            reverse=isComplex,
         )
         return [name for name, _ in sorted_models]
