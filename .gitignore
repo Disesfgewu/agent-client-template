@@ -1,0 +1,14 @@
+
+config/api.local.json
+config/skills.json
+.env
+README.pdf
+
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
