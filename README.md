@@ -118,7 +118,22 @@ cp .env.example              .env
 | `modelName` | Model identifier sent to the provider; also the lookup key in this client. |
 | `maxInputToken` | Input window. Used for token-aware routing — prompts larger than this skip the model. |
 | `maxOutputToken` | Max output tokens (sent as `max_tokens` / `num_predict` / `maxOutputTokens`). |
+| `tier` | Optional capability tier (integer, higher = more capable; default `2`). Drives difficulty-based routing — see below. |
 | `apiKey` | Provider key. Leave `""` for local Ollama. |
+
+**Routing strategy.** `AgentClient`'s `routingStrategy` (default `"taskComplex"`)
+decides the order in which models are tried; `connect()` then skips any whose
+window can't hold the input and uses the first that succeeds:
+
+- `"taskComplex"` (default) — **difficulty tiering**: short prompts try the
+  lowest-`tier` (cheapest) model first to save cost; long prompts (over
+  `complexityThreshold` chars, default 4000) try the highest-`tier` (most
+  capable) model first. Ties broken by window size.
+- `"maxTokens"` — always prefer the largest context window.
+- `""` — use config order as-is (the list is the priority).
+
+So with `deepseek-v4-flash` at `tier 1` and `deepseek-v4-pro` at `tier 3`, a
+quick question routes to Flash while a large/complex one routes to Pro.
 
 Per-protocol `endpointUrl` conventions:
 
@@ -213,7 +228,7 @@ async def main():
 asyncio.run(main())
 ```
 
-`AgentClient(skillConfigPath, skillFolderPath, apiConfig, contextWindowSize=32000, historyDir=None)`
+`AgentClient(skillConfigPath, skillFolderPath, apiConfig, contextWindowSize=32000, historyDir=None, routingStrategy="taskComplex")`
 
 - `skillConfigPath` — path to `config/skills.json`.
 - `skillFolderPath` — path to the `skills/` directory.
@@ -222,6 +237,9 @@ asyncio.run(main())
 - `contextWindowSize` — soft token threshold at which context memory is compressed.
 - `historyDir` — directory for per-session JSON logs; `None` (default) disables
   disk writes, which is usually what you want when used as a library.
+- `routingStrategy` — model-selection strategy: `"taskComplex"` (default,
+  difficulty tiering), `"maxTokens"`, or `""` (config order). See
+  [Configuration](#1-models--api-endpoints).
 
 Passing config in-memory (no files needed):
 

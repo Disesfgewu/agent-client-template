@@ -5,10 +5,15 @@ import httpx
 
 
 class llmRouter:
-    def __init__(self, config, priority: str = "") -> None:
+    def __init__(
+        self, config, priority: str = "", complexityThreshold: int = 4000
+    ) -> None:
         # Explicit config injection (no package-relative file lookups), so the
         # router works the same whether run from a checkout or pip-installed.
         # `config` is either a list of model dicts or a path to a JSON file.
+        # complexityThreshold: prompt length (chars) above which the
+        # "taskComplex" strategy treats a task as hard (see
+        # priorityAlgorithmByTaskComplex).
         if config is None:
             raise ValueError(
                 "llmRouter requires a model config: pass a list of model dicts "
@@ -17,6 +22,7 @@ class llmRouter:
         if isinstance(config, (str, os.PathLike)):
             with open(config, "r", encoding="utf-8") as f:
                 config = json.load(f)
+        self._complexity_threshold = complexityThreshold
         self._api = self.decompose(config, priority)
         self._asyncClient: Optional[httpx.AsyncClient] = None
 
@@ -182,6 +188,9 @@ class llmRouter:
                 "maxInputToken": item["maxInputToken"],
                 "maxOutputToken": item["maxOutputToken"],
                 "apiKey": item.get("apiKey", ""),
+                # Capability tier (higher = more capable). Drives difficulty
+                # tiering in priorityAlgorithmByTaskComplex. Defaults to 2.
+                "tier": item.get("tier", 2),
             }
 
         self._priority_strategy = priority
@@ -200,13 +209,17 @@ class llmRouter:
         return [name for name, _ in sorted_models]
 
     def priorityAlgorithmByTaskComplex(self, models: dict, inputStr: str) -> list:
-        complexity = len(inputStr)
-        if complexity > 1000:
-            sorted_models = sorted(
-                models.items(), key=lambda x: x[1]["maxInputToken"], reverse=True
-            )
-        else:
-            sorted_models = sorted(
-                models.items(), key=lambda x: x[1]["maxInputToken"], reverse=False
-            )
+        # Difficulty heuristic: a longer prompt means more context to handle, so
+        # it is treated as harder. Hard tasks prefer higher-tier (more capable)
+        # models; easy tasks prefer the lowest-tier model first to save cost.
+        # Within the same tier we break ties by window size (bigger first for
+        # hard tasks, smaller first for easy ones). The token-fit guard in
+        # connect() still drops any model whose window cannot hold the input.
+        threshold = getattr(self, "_complexity_threshold", 4000)
+        complex_task = len(inputStr) > threshold
+        sorted_models = sorted(
+            models.items(),
+            key=lambda x: (x[1].get("tier", 2), x[1]["maxInputToken"]),
+            reverse=complex_task,
+        )
         return [name for name, _ in sorted_models]

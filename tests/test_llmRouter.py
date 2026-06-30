@@ -109,28 +109,74 @@ class TestLLMRouterLogic(unittest.TestCase):
         self.assertEqual(result[0], "gpt-3.5-turbo")
         self.assertEqual(result[1], "gpt-4")
 
-    def test_priorityAlgorithmByTaskComplex_short_input(self):
+    def test_decompose_defaults_tier_to_2(self):
         router = object.__new__(llmRouter)
-        models = {
-            "gpt-4": {"maxInputToken": 8192},
-            "gpt-3.5-turbo": {"maxInputToken": 16385},
-        }
+        result = router.decompose(
+            [
+                {
+                    "provider": "x",
+                    "endpointUrl": "http://x",
+                    "modelName": "m",
+                    "maxInputToken": 4096,
+                    "maxOutputToken": 2048,
+                }
+            ]
+        )
+        self.assertEqual(result["models"]["m"]["tier"], 2)
 
-        result = router.priorityAlgorithmByTaskComplex(models, "short input")
-        self.assertEqual(result[0], "gpt-4")
-        self.assertEqual(result[1], "gpt-3.5-turbo")
-
-    def test_priorityAlgorithmByTaskComplex_long_input(self):
+    def test_decompose_stores_explicit_tier(self):
         router = object.__new__(llmRouter)
-        models = {
-            "gpt-4": {"maxInputToken": 8192},
-            "gpt-3.5-turbo": {"maxInputToken": 16385},
-        }
+        result = router.decompose(
+            [
+                {
+                    "provider": "x",
+                    "endpointUrl": "http://x",
+                    "modelName": "m",
+                    "maxInputToken": 4096,
+                    "maxOutputToken": 2048,
+                    "tier": 5,
+                }
+            ]
+        )
+        self.assertEqual(result["models"]["m"]["tier"], 5)
 
-        long_input = "x" * 1500
-        result = router.priorityAlgorithmByTaskComplex(models, long_input)
-        self.assertEqual(result[0], "gpt-3.5-turbo")
-        self.assertEqual(result[1], "gpt-4")
+    def test_taskComplex_simple_prefers_low_tier(self):
+        router = object.__new__(llmRouter)
+        router._complexity_threshold = 100
+        models = {
+            "cheap": {"maxInputToken": 8000, "tier": 1},
+            "strong": {"maxInputToken": 200000, "tier": 3},
+        }
+        result = router.priorityAlgorithmByTaskComplex(models, "hi")
+        self.assertEqual(result[0], "cheap")
+        self.assertEqual(result[1], "strong")
+
+    def test_taskComplex_complex_prefers_high_tier(self):
+        router = object.__new__(llmRouter)
+        router._complexity_threshold = 100
+        models = {
+            "cheap": {"maxInputToken": 8000, "tier": 1},
+            "strong": {"maxInputToken": 200000, "tier": 3},
+        }
+        result = router.priorityAlgorithmByTaskComplex(models, "x" * 500)
+        self.assertEqual(result[0], "strong")
+        self.assertEqual(result[1], "cheap")
+
+    def test_taskComplex_breaks_ties_by_window_size(self):
+        router = object.__new__(llmRouter)
+        router._complexity_threshold = 100
+        models = {
+            "small": {"maxInputToken": 8192},   # tier defaults to 2
+            "big": {"maxInputToken": 200000},   # tier defaults to 2
+        }
+        # easy task -> smaller window first within the same tier
+        self.assertEqual(
+            router.priorityAlgorithmByTaskComplex(models, "hi")[0], "small"
+        )
+        # hard task -> bigger window first
+        self.assertEqual(
+            router.priorityAlgorithmByTaskComplex(models, "x" * 500)[0], "big"
+        )
 
     def test_getMinInputToken(self):
         router = object.__new__(llmRouter)

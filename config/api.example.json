@@ -6,6 +6,7 @@
         "modelName": "gpt-4o-mini",
         "maxInputToken": 128000,
         "maxOutputToken": 16384,
+        "tier": 1,
         "apiKey": "sk-your-openai-key"
     },
     {
@@ -15,6 +16,7 @@
         "modelName": "claude-sonnet-4-6",
         "maxInputToken": 200000,
         "maxOutputToken": 8192,
+        "tier": 3,
         "apiKey": "sk-ant-your-key"
     },
     {
@@ -24,6 +26,7 @@
         "modelName": "gemini-2.5-pro",
         "maxInputToken": 1048576,
         "maxOutputToken": 65536,
+        "tier": 3,
         "apiKey": "your-google-api-key"
     },
     {
@@ -33,6 +36,7 @@
         "modelName": "llama3.1",
         "maxInputToken": 128000,
         "maxOutputToken": 8192,
+        "tier": 1,
         "apiKey": ""
     }
 ]

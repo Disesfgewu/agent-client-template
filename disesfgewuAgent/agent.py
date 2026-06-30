@@ -21,11 +21,15 @@ class AgentClient:
         apiConfig,
         contextWindowSize: int = 32000,
         historyDir: Optional[str] = None,
+        routingStrategy: str = "taskComplex",
     ):
         # apiConfig: list of model dicts or path to a JSON file (injected, so the
         # package never reaches into its own install dir for user config).
         # historyDir: where to persist session logs; None disables disk writes.
-        self._router = llmRouter(apiConfig)
+        # routingStrategy: how the router picks a model — "taskComplex" tiers by
+        # difficulty (default), "maxTokens" prefers the biggest window, "" keeps
+        # the config order.
+        self._router = llmRouter(apiConfig, routingStrategy)
         self._skillLoader = skillLoader(skillConfigPath, skillFolderPath)
 
         self._contextWindowSize = contextWindowSize
