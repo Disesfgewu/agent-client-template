@@ -5,13 +5,15 @@ A skills-driven, multi-provider LLM agent client you can use as a template.
 Give it a task (optionally with files), and it will:
 
 1. **Retrieve relevant skills** via vector search and inject them into the prompt.
-2. **Read attached files** (txt / md / pdf / xlsx / docx / pptx) into context.
+2. **Read attached files** (pdf / xlsx / docx / pptx, plus any plain-text or
+   source file) into context.
 3. **Route across LLM providers** (OpenAI / Anthropic / Google / Ollama) with
-   token-aware selection and automatic failover.
+   difficulty-tiered, token-aware selection and automatic failover.
 4. **Run an iterative `done` / `continue` loop** until the task is complete,
    compressing context memory when it grows too large and splitting prompts that
    exceed the largest model window.
-5. **Persist each session** to `history/` as JSON.
+5. **Optionally execute Python it writes** (opt-in) to compute real results.
+6. **Persist each session** to `history/` as JSON.
 
 ---
 
@@ -240,7 +242,7 @@ async def main():
 asyncio.run(main())
 ```
 
-`AgentClient(skillConfigPath, skillFolderPath, apiConfig, contextWindowSize=32000, historyDir=None, routingStrategy="taskComplex", complexityScoreThreshold=3)`
+`AgentClient(skillConfigPath, skillFolderPath, apiConfig, contextWindowSize=32000, historyDir=None, routingStrategy="taskComplex", complexityScoreThreshold=3, maxTurnsInContext=6, enableCodeExecution=False, codeExecutionTimeout=30)`
 
 - `skillConfigPath` — path to `config/skills.json`.
 - `skillFolderPath` — path to the `skills/` directory.
@@ -254,6 +256,10 @@ asyncio.run(main())
   [Configuration](#1-models--api-endpoints).
 - `complexityScoreThreshold` — score at/above which a task is treated as
   complex (default `3`). Raise it to keep more tasks on the cheaper models.
+- `maxTurnsInContext` — how many past turns `chat()` feeds back as context.
+- `enableCodeExecution` — allow the agent to run Python it writes (see below).
+  **Off by default.**
+- `codeExecutionTimeout` — per-run timeout (seconds) for executed code.
 
 Whatever the order, the router always **skips models whose context window is
 too small for the input** and uses the first one that both ranks well and
@@ -273,12 +279,27 @@ agent = AgentClient("config/skills.json", "skills", models)
 
 Key methods:
 
-- `await agent.ask(inputStr, inputFiles=None) -> str` — run a task, return the answer.
+- `await agent.ask(inputStr, inputFiles=None) -> str` — run one independent task.
+- `await agent.chat(message, inputFiles=None) -> str` — like `ask()` but remembers
+  prior turns (multi-turn conversation); `agent.resetConversation()` clears it.
 - `await agent.aclose()` — close the underlying HTTP client (or use `async with`).
 
 > **Lifecycle:** `ask()` does **not** close the router, so the same client can be
 > reused across independent tasks. Manage the connection with `async with` or by
 > calling `aclose()` when done.
+
+### Code execution (opt-in)
+
+With `enableCodeExecution=True`, the response protocol gains an `execute` action:
+the model can emit `{"status": "execute", "language": "python", "code": "..."}`,
+the agent runs it in a subprocess (with `codeExecutionTimeout`), feeds the
+stdout/stderr back, and the model then returns a `done` answer with the output
+and an explanation. This is how the agent *actually computes* results instead of
+guessing them.
+
+> ⚠️ **Security:** this runs LLM-generated code on your machine. It is **off by
+> default** and should only be enabled for trusted, local use (as in
+> [`demo.py`](demo.py)). There is no sandbox beyond the subprocess + timeout.
 
 ---
 

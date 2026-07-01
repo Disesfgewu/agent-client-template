@@ -106,6 +106,23 @@ class TestAgentEndToEnd(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(agent._skillCacheToken, 0)
             print(f"\n[e2e skills] {agent._skillCacheToken} skill tokens injected")
 
+    async def test_writes_runs_and_explains_code(self):
+        agent = AgentClient(
+            SKILLS_CONFIG,
+            SKILLS_DIR,
+            API_CONFIG,
+            historyDir=os.path.join(ROOT, "history"),
+            enableCodeExecution=True,
+        )
+        async with agent:
+            result = await agent.ask(
+                'Write and RUN Python to compute the sum of integers from 1 to '
+                '100. Use status "execute" to actually run it, then report the '
+                "numeric result."
+            )
+        self.assertIn("5050", result)
+        print(f"\n[e2e code-exec] {result[:160]}")
+
     async def test_context_manager_closes_router(self):
         agent = self._agent()
         async with agent:

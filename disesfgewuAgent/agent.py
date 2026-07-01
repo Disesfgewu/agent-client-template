@@ -3,6 +3,9 @@ import json
 import logging
 import os
 import re
+import subprocess
+import sys
+import tempfile
 from datetime import datetime
 from typing import Optional
 
@@ -62,6 +65,8 @@ class AgentClient:
         routingStrategy: str = "taskComplex",
         complexityScoreThreshold: int = 3,
         maxTurnsInContext: int = 6,
+        enableCodeExecution: bool = False,
+        codeExecutionTimeout: int = 30,
     ):
         # apiConfig: list of model dicts or path to a JSON file (injected, so the
         # package never reaches into its own install dir for user config).
@@ -92,6 +97,11 @@ class AgentClient:
         # calls; only cleared by resetConversation().
         self._maxTurnsInContext = maxTurnsInContext
         self._conversation = []
+
+        # Opt-in code execution. Runs LLM-generated Python in a subprocess with a
+        # timeout. Off by default: only enable for trusted, local use.
+        self._enableCodeExecution = enableCodeExecution
+        self._codeExecutionTimeout = codeExecutionTimeout
 
         self._resetState()
 
@@ -167,13 +177,23 @@ class AgentClient:
     def _buildPrompt(self, informations: str = "") -> str:
         sections = []
 
-        sections.append(
+        instructions = (
             "You are a task-oriented agent. You MUST respond with valid JSON only.\n"
             "Response format:\n"
             '{"status": "done", "answer": "final answer", "reasoning": "..."}\n'
             '{"status": "continue", "answer": "current progress", '
             '"reasoning": "...", "next_action": "..."}'
         )
+        if self._enableCodeExecution:
+            instructions += (
+                '\n{"status": "execute", "language": "python", "code": "...", '
+                '"reasoning": "..."}\n'
+                'Use "execute" to actually run Python when a task needs real '
+                "computation, data processing, or verification. Print results to "
+                "stdout. The code's stdout/stderr is returned to you; then reply "
+                'with "done", including the output and an explanation of it.'
+            )
+        sections.append(instructions)
 
         if self._skillCache:
             sections.append(self._skillCache)
@@ -335,6 +355,32 @@ class AgentClient:
             signal = self._parseSignal(response)
             status = signal.get("status", "done")
 
+            if status == "execute" and self._enableCodeExecution:
+                code = signal.get("code", "")
+                language = signal.get("language", "python")
+                self._logger.info(f"Executing {language} code ({len(code)} chars)")
+                stdout, stderr, rc = await self._executeCode(code, language)
+                self._logger.info(f"Execution finished with exit code {rc}")
+                result_block = (
+                    f"You executed this {language} code:\n{code}\n\n"
+                    f"Result (exit code {rc}):\n"
+                    f"STDOUT:\n{stdout or '(empty)'}\n"
+                    f"STDERR:\n{stderr or '(empty)'}"
+                )
+                self._history.append(
+                    {"iteration": iteration, "execution_result": result_block}
+                )
+                self._inputStrCache += (
+                    f"\n\n[Iteration {iteration} execution]\n{result_block}"
+                )
+                self._contextWindowsToken = self._countTokens(self._inputStrCache)
+                informations = (
+                    result_block
+                    + '\n\nNow respond with status "done": show the output and '
+                    'explain it, or "execute" again if more steps are needed.'
+                )
+                continue
+
             if status == "done":
                 self._logger.info("Task completed")
                 await self._backupHistory()
@@ -406,6 +452,33 @@ class AgentClient:
         if len(tokens) <= max_tokens:
             return text
         return self._encoder.decode(tokens[:max_tokens])
+
+    def _runPythonSubprocess(self, code: str) -> tuple:
+        fd, path = tempfile.mkstemp(suffix=".py")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(code)
+            proc = subprocess.run(
+                [sys.executable, path],
+                capture_output=True,
+                text=True,
+                timeout=self._codeExecutionTimeout,
+            )
+            return proc.stdout, proc.stderr, proc.returncode
+        except subprocess.TimeoutExpired:
+            return "", f"Timed out after {self._codeExecutionTimeout}s", -1
+        finally:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+    async def _executeCode(self, code: str, language: str = "python") -> tuple:
+        # Returns (stdout, stderr, exit_code). Runs in a worker thread so the
+        # event loop is not blocked by the subprocess.
+        if language.lower() not in ("python", "py"):
+            return "", f"Unsupported language: {language}", -1
+        return await asyncio.to_thread(self._runPythonSubprocess, code)
 
     async def _backupHistory(self):
         if not self._historyDir:

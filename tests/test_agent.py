@@ -273,6 +273,37 @@ class TestAgentLogic(unittest.TestCase):
         self.assertEqual(self.agent._conversation, [])
 
 
+class TestAgentCodeExecution(unittest.IsolatedAsyncioTestCase):
+    """Offline: exercises the code executor directly (runs real subprocesses)."""
+
+    def _agent(self):
+        config_path = os.path.join(ROOT, "config", "skills.json")
+        skills_dir = os.path.join(ROOT, "skills")
+        return AgentClient(
+            config_path, skills_dir, SAMPLE_API_CONFIG, enableCodeExecution=True
+        )
+
+    async def test_execute_captures_stdout(self):
+        out, err, rc = await self._agent()._executeCode("print('hello world')")
+        self.assertEqual(rc, 0)
+        self.assertIn("hello world", out)
+
+    async def test_execute_computes_result(self):
+        out, err, rc = await self._agent()._executeCode("print(sum(range(101)))")
+        self.assertEqual(rc, 0)
+        self.assertIn("5050", out)
+
+    async def test_execute_reports_error(self):
+        out, err, rc = await self._agent()._executeCode("raise ValueError('boom')")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("boom", err)
+
+    async def test_execute_rejects_non_python(self):
+        out, err, rc = await self._agent()._executeCode("echo hi", language="bash")
+        self.assertEqual(rc, -1)
+        self.assertIn("Unsupported", err)
+
+
 @unittest.skipUnless(live_api_available(), SKIP_REASON)
 class TestAgentReal(unittest.IsolatedAsyncioTestCase):
     @classmethod

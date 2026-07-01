@@ -115,7 +115,11 @@ async def main() -> None:
     pending_files = []  # files attached for the next message
 
     async with AgentClient(
-        SKILLS_CONFIG, SKILLS_DIR, API_CONFIG, historyDir=HISTORY_DIR
+        SKILLS_CONFIG,
+        SKILLS_DIR,
+        API_CONFIG,
+        historyDir=HISTORY_DIR,
+        enableCodeExecution=True,  # local demo: let the agent run Python it writes
     ) as agent:
         while True:
             try:
