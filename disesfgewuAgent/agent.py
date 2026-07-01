@@ -67,6 +67,7 @@ class AgentClient:
         maxTurnsInContext: int = 6,
         enableCodeExecution: bool = False,
         codeExecutionTimeout: int = 30,
+        onEvent=None,
     ):
         # apiConfig: list of model dicts or path to a JSON file (injected, so the
         # package never reaches into its own install dir for user config).
@@ -103,7 +104,20 @@ class AgentClient:
         self._enableCodeExecution = enableCodeExecution
         self._codeExecutionTimeout = codeExecutionTimeout
 
+        # Optional observer of the agent loop, so a UI can surface each step
+        # (planning, running code, observing output). Makes the agentic loop
+        # visible instead of hiding it behind a single final answer.
+        self._onEvent = onEvent
+
         self._resetState()
+
+    def _emit(self, event: dict) -> None:
+        if self._onEvent is None:
+            return
+        try:
+            self._onEvent(event)
+        except Exception:
+            self._logger.debug("onEvent handler raised", exc_info=True)
 
     def _resetState(self) -> None:
         # Per-conversation accumulators; cleared at the start of every ask() so
@@ -178,20 +192,25 @@ class AgentClient:
         sections = []
 
         instructions = (
-            "You are a task-oriented agent. You MUST respond with valid JSON only.\n"
-            "Response format:\n"
+            "You are an autonomous task-solving agent (not a chat bot). Think "
+            "step by step and work toward completing the task.\n"
+            "Respond with valid JSON only, one action per response:\n"
+            '{"status": "continue", "answer": "progress so far", '
+            '"reasoning": "your step-by-step thinking", "next_action": "next step"}\n'
             '{"status": "done", "answer": "final answer", "reasoning": "..."}\n'
-            '{"status": "continue", "answer": "current progress", '
-            '"reasoning": "...", "next_action": "..."}'
+            "For a COMPLEX task, decompose it: take several 'continue' steps, "
+            "reasoning explicitly at each step, and only use 'done' once the whole "
+            "task is finished. For a simple task, answer with 'done' directly."
         )
         if self._enableCodeExecution:
             instructions += (
-                '\n{"status": "execute", "language": "python", "code": "...", '
+                '\nTo actually run code, use:\n'
+                '{"status": "execute", "language": "python", "code": "...", '
                 '"reasoning": "..."}\n'
-                'Use "execute" to actually run Python when a task needs real '
-                "computation, data processing, or verification. Print results to "
-                "stdout. The code's stdout/stderr is returned to you; then reply "
-                'with "done", including the output and an explanation of it.'
+                'Use "execute" whenever the task needs real computation, data '
+                "processing, file inspection, or verification. Print results to "
+                "stdout. The code's stdout/stderr is returned to you, then you "
+                "continue reasoning or finish with 'done'."
             )
         sections.append(instructions)
 
@@ -229,6 +248,7 @@ class AgentClient:
         self._logger.info(
             f"Task assessed as {'complex' if self._taskIsComplex else 'simple'}"
         )
+        self._emit({"type": "assessed", "complex": self._taskIsComplex})
 
     def _splitTaskInputAlgorithm(self, text: str, chunk_token_budget: int) -> list:
         tokens = self._encoder.encode(text)
@@ -348,6 +368,9 @@ class AgentClient:
 
         for iteration in range(1, self._maxIterations + 1):
             self._logger.info(f"Iteration {iteration}/{self._maxIterations}")
+            self._emit(
+                {"type": "iteration", "iteration": iteration, "max": self._maxIterations}
+            )
 
             response = await self._action(informations)
             self._history.append({"iteration": iteration, "response": response})
@@ -359,8 +382,24 @@ class AgentClient:
                 code = signal.get("code", "")
                 language = signal.get("language", "python")
                 self._logger.info(f"Executing {language} code ({len(code)} chars)")
+                self._emit(
+                    {
+                        "type": "execute",
+                        "language": language,
+                        "code": code,
+                        "reasoning": signal.get("reasoning", ""),
+                    }
+                )
                 stdout, stderr, rc = await self._executeCode(code, language)
                 self._logger.info(f"Execution finished with exit code {rc}")
+                self._emit(
+                    {
+                        "type": "execution_result",
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "exit_code": rc,
+                    }
+                )
                 result_block = (
                     f"You executed this {language} code:\n{code}\n\n"
                     f"Result (exit code {rc}):\n"
@@ -387,6 +426,14 @@ class AgentClient:
                 return signal.get("answer", response)
 
             self._logger.info(f"Continuing: {signal.get('reasoning', '')}")
+            self._emit(
+                {
+                    "type": "step",
+                    "reasoning": signal.get("reasoning", ""),
+                    "answer": signal.get("answer", ""),
+                    "next_action": signal.get("next_action", ""),
+                }
+            )
             # Store the parsed answer, not the raw response, so context memory
             # does not fill up with JSON envelopes / reasoning scaffolding.
             # Default to "" (not the raw response) when no answer is present.

@@ -98,7 +98,7 @@ class TestAgentLogic(unittest.TestCase):
         self.agent._inputStr = "Test task"
         prompt = self.agent._buildPrompt()
 
-        self.assertIn("You are a task-oriented agent", prompt)
+        self.assertIn("autonomous task-solving agent", prompt)
         self.assertIn("[TASK]", prompt)
         self.assertIn("Test task", prompt)
 
@@ -143,7 +143,7 @@ class TestAgentLogic(unittest.TestCase):
 
         prompt = self.agent._buildPrompt(informations)
 
-        self.assertIn("You are a task-oriented agent", prompt)
+        self.assertIn("autonomous task-solving agent", prompt)
         self.assertIn("[SKILLS]", prompt)
         self.assertIn("[CONTEXT MEMORY]", prompt)
         self.assertIn("[INFORMATIONS FROM LAST]", prompt)
@@ -271,6 +271,23 @@ class TestAgentLogic(unittest.TestCase):
         self.agent._conversation = [("User", "x"), ("Assistant", "y")]
         self.agent.resetConversation()
         self.assertEqual(self.agent._conversation, [])
+
+    def test_emit_calls_handler(self):
+        events = []
+        self.agent._onEvent = events.append
+        self.agent._emit({"type": "step", "reasoning": "r"})
+        self.assertEqual(events, [{"type": "step", "reasoning": "r"}])
+
+    def test_emit_noop_without_handler(self):
+        self.agent._onEvent = None
+        self.agent._emit({"type": "step"})  # must not raise
+
+    def test_emit_swallows_handler_errors(self):
+        def bad(event):
+            raise RuntimeError("boom")
+
+        self.agent._onEvent = bad
+        self.agent._emit({"type": "step"})  # must not raise
 
 
 class TestAgentCodeExecution(unittest.IsolatedAsyncioTestCase):

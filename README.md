@@ -67,7 +67,7 @@ agent-client-template/
 ├── history/                  # per-session JSON logs (gitignored)
 ├── tests/                    # unit + live integration tests
 ├── example.py                # runnable end-to-end demo (scripted)
-├── demo.py                   # interactive CLI chat bot
+├── demo.py                   # interactive agent TUI (rich): shows each step
 ├── pyproject.toml            # packaging metadata (pip install .)
 ├── .env.example              # template: copy to .env
 └── requirements.txt
@@ -204,15 +204,18 @@ The `skills.json` index is the source of truth for which skills exist; the
 
 ## Usage
 
-For an interactive REPL, run the CLI chat bot:
+For an interactive agent TUI (a `rich`-rendered terminal UI that shows the agent
+reasoning, running code, and observing output step by step — not just a chat
+bot), run:
 
 ```bash
 python demo.py
 ```
 
-It keeps a short conversation history, supports `/file <path>` to attach a
-document, `/reset`, and `/exit`. See [`example.py`](example.py) for a scripted
-end-to-end example. The essentials:
+It streams each step of the agent loop, executes Python the agent writes, keeps
+conversation memory, and supports `/file <path>` (inline too), `/reset`, and
+`/exit`. See [`example.py`](example.py) for a scripted end-to-end example. The
+programmatic essentials:
 
 ```python
 import asyncio
