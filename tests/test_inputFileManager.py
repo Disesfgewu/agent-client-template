@@ -356,6 +356,12 @@ class TestInputFileManagerDecomposeAsync(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Async content 1.", result)
         self.assertIn("TestData", result)
 
+    async def test_decompose_includes_path(self):
+        # The path is needed so a code-editing agent can write the file back.
+        result, _ = await inputFileManager.decompose([self.file1], self._countTokens)
+        self.assertIn("path:", result)
+        self.assertIn(os.path.abspath(self.file1), result)
+
 
 if __name__ == "__main__":
     unittest.main()

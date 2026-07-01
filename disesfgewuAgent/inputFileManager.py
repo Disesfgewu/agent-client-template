@@ -115,7 +115,8 @@ class inputFileManager:
         for filepath in filepaths:
             text = await asyncio.to_thread(inputFileManager.extract, filepath)
             filename = os.path.basename(filepath)
-            parts.append(f"[{filename}]\n{text}")
+            abspath = os.path.abspath(filepath)
+            parts.append(f"[{filename}] (path: {abspath})\n{text}")
 
         result = "[FILES]\n" + "\n\n".join(parts)
         token_count = countTokens(result)
@@ -127,7 +128,8 @@ class inputFileManager:
         for filepath in filepaths:
             text = inputFileManager.extract(filepath)
             filename = os.path.basename(filepath)
-            parts.append(f"[{filename}]\n{text}")
+            abspath = os.path.abspath(filepath)
+            parts.append(f"[{filename}] (path: {abspath})\n{text}")
 
         result = "[FILES]\n" + "\n\n".join(parts)
         token_count = countTokens(result)

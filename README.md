@@ -62,6 +62,7 @@ agent-client-template/
 │   └── skills.json           # skill index + cached embeddings (gitignored)
 ├── skills/
 │   ├── code-review.md        # a skill = markdown + YAML frontmatter
+│   ├── code-editing.md       # lets the agent modify files (with code exec)
 │   ├── debugging.md
 │   └── testing.md
 ├── history/                  # per-session JSON logs (gitignored)
@@ -199,6 +200,12 @@ To **add a new skill**:
 
 The `skills.json` index is the source of truth for which skills exist; the
 `embedding` field is filled in automatically.
+
+**Code-editing skill.** The bundled `code-editing` skill turns the agent into a
+Codex-style code editor: when a task asks to modify a file (and
+`enableCodeExecution=True`), it reads the file, applies a minimal targeted patch,
+writes it back to disk, and verifies — all via `execute` steps. Attached files
+now carry their path in the `[FILES]` section so the agent knows where to write.
 
 ---
 

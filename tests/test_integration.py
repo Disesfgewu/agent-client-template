@@ -123,6 +123,36 @@ class TestAgentEndToEnd(unittest.IsolatedAsyncioTestCase):
         self.assertIn("5050", result)
         print(f"\n[e2e code-exec] {result[:160]}")
 
+    async def test_agent_edits_a_file(self):
+        work_dir = tempfile.mkdtemp()
+        try:
+            path = os.path.join(work_dir, "mod.py")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("def add(a, b):\n    return a + b\n")
+
+            agent = AgentClient(
+                SKILLS_CONFIG,
+                SKILLS_DIR,
+                API_CONFIG,
+                historyDir=os.path.join(ROOT, "history"),
+                enableCodeExecution=True,
+            )
+            async with agent:
+                result = await agent.ask(
+                    f"Edit the file at {path}: add a function subtract(a, b) that "
+                    "returns a - b, keeping the existing add(). Actually apply the "
+                    "change to the file on disk, then confirm."
+                )
+
+            with open(path, encoding="utf-8") as f:
+                content = f.read()
+            self.assertIn("subtract", content)
+            self.assertIn("a - b", content)
+            self.assertIn("def add", content)  # existing code preserved
+            print(f"\n[e2e edit] {result[:120]}")
+        finally:
+            shutil.rmtree(work_dir)
+
     async def test_context_manager_closes_router(self):
         agent = self._agent()
         async with agent:
