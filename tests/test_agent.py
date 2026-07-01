@@ -241,6 +241,37 @@ class TestAgentLogic(unittest.TestCase):
         self.agent._matchedSkillCount = 0
         self.assertTrue(self.agent._assessComplexity())
 
+    def test_buildConversationInput_first_turn(self):
+        self.agent.resetConversation()
+        self.assertEqual(self.agent._buildConversationInput("hi"), "hi")
+
+    def test_buildConversationInput_includes_history(self):
+        self.agent._conversation = [
+            ("User", "my name is Bob"),
+            ("Assistant", "hi Bob"),
+        ]
+        built = self.agent._buildConversationInput("what is my name?")
+        self.assertIn("my name is Bob", built)
+        self.assertIn("hi Bob", built)
+        self.assertIn("what is my name?", built)
+
+    def test_buildConversationInput_respects_max_turns(self):
+        self.agent._maxTurnsInContext = 1
+        self.agent._conversation = [
+            ("User", "old-q"),
+            ("Assistant", "old-a"),
+            ("User", "recent-q"),
+            ("Assistant", "recent-a"),
+        ]
+        built = self.agent._buildConversationInput("now")
+        self.assertNotIn("old-q", built)
+        self.assertIn("recent-q", built)
+
+    def test_resetConversation_clears(self):
+        self.agent._conversation = [("User", "x"), ("Assistant", "y")]
+        self.agent.resetConversation()
+        self.assertEqual(self.agent._conversation, [])
+
 
 @unittest.skipUnless(live_api_available(), SKIP_REASON)
 class TestAgentReal(unittest.IsolatedAsyncioTestCase):

@@ -238,23 +238,29 @@ class TestInputFileManagerErrors(unittest.TestCase):
             inputFileManager.extract("/nonexistent/path/file.txt")
         self.assertIn("File not found", str(context.exception))
 
-    def test_extract_unsupported_format(self):
+    def test_extract_unknown_extension_reads_as_text(self):
         test_dir = tempfile.mkdtemp()
         try:
             filepath = os.path.join(test_dir, "file.xyz")
-            with open(filepath, "w") as f:
+            with open(filepath, "w", encoding="utf-8") as f:
                 f.write("content")
 
-            with self.assertRaises(ValueError) as context:
-                inputFileManager.extract(filepath)
-            self.assertIn("Unsupported format", str(context.exception))
-            self.assertIn(".xyz", str(context.exception))
+            self.assertEqual(inputFileManager.extract(filepath), "content")
         finally:
             shutil.rmtree(test_dir)
 
-    def test_supported_formats(self):
-        expected = {".txt", ".md", ".pdf", ".xlsx", ".docx", ".pptx"}
-        self.assertEqual(inputFileManager.SUPPORTED_FORMATS, expected)
+    def test_extract_source_code_as_text(self):
+        test_dir = tempfile.mkdtemp()
+        try:
+            filepath = os.path.join(test_dir, "script.py")
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write("def hello():\n    return 42\n")
+
+            result = inputFileManager.extract(filepath)
+            self.assertIn("def hello", result)
+            self.assertIn("return 42", result)
+        finally:
+            shutil.rmtree(test_dir)
 
 
 class TestInputFileManagerDecompose(unittest.TestCase):

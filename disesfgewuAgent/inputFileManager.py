@@ -19,9 +19,7 @@ class inputFileManager:
             raise FileNotFoundError(f"File not found: {filepath}")
 
         ext = path.suffix.lower()
-        if ext in (".txt", ".md"):
-            return inputFileManager._extractTxt(filepath)
-        elif ext == ".pdf":
+        if ext == ".pdf":
             return inputFileManager._extractPdf(filepath)
         elif ext == ".xlsx":
             return inputFileManager._extractXlsx(filepath)
@@ -29,11 +27,10 @@ class inputFileManager:
             return inputFileManager._extractDocx(filepath)
         elif ext == ".pptx":
             return inputFileManager._extractPptx(filepath)
-        else:
-            raise ValueError(
-                f"Unsupported format: {ext}. "
-                f"Supported: {', '.join(sorted(inputFileManager.SUPPORTED_FORMATS))}"
-            )
+        # Everything else (.txt, .md, source code, .json, .csv, .yaml, ...) is
+        # read as plain text. _extractTxt falls back to latin-1, so it won't
+        # crash even on binary files fed in by mistake.
+        return inputFileManager._extractTxt(filepath)
 
     @staticmethod
     def _extractTxt(filepath: str) -> str:

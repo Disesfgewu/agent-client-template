@@ -1,7 +1,10 @@
 import json
+import logging
 import os
 from typing import Optional
 import httpx
+
+logger = logging.getLogger(__name__)
 
 
 class llmRouter:
@@ -80,6 +83,13 @@ class llmRouter:
                     )
                     continue
                 answer = await self._callLLM(api, inputStr)
+                logger.info(
+                    "Routed to '%s' (tier %s, %s, %s tokens in)",
+                    model_name,
+                    api.get("tier", 2),
+                    api.get("protocol", "openai"),
+                    inputToken,
+                )
                 return answer
             except Exception as e:
                 errors.append(f"{model_name}: {str(e)}")

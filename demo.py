@@ -1,5 +1,9 @@
 """Interactive CLI chat bot built on AgentClient.
 
+The client is intentionally thin: it constructs an AgentClient and calls
+agent.chat(message) each turn. Conversation memory lives in AgentClient, so this
+file only deals with terminal I/O and slash-commands.
+
 One-time setup
 --------------
     cp config/api.example.json   config/api.local.json   # fill in models / keys
@@ -13,7 +17,9 @@ Run
 
 Commands
 --------
-    /file <path>   attach a local file (txt/md/pdf/xlsx/docx/pptx) to your next message
+    /file <path>   attach a file to your next message; may appear inline, e.g.
+                   "code review /file src/app.py". Reads txt/md/pdf/xlsx/docx/pptx
+                   and any plain-text/source file.
     /reset         clear the conversation history
     /help          show this help
     /exit, /quit   leave
@@ -22,6 +28,7 @@ Commands
 import asyncio
 import logging
 import os
+import re
 
 from dotenv import load_dotenv
 
@@ -32,16 +39,17 @@ API_CONFIG = os.path.join(ROOT, "config", "api.local.json")
 SKILLS_CONFIG = os.path.join(ROOT, "config", "skills.json")
 SKILLS_DIR = os.path.join(ROOT, "skills")
 HISTORY_DIR = os.path.join(ROOT, "history")
-
-# How many past turns to feed back as context so it behaves like a chat.
-MAX_TURNS_IN_CONTEXT = 6
+LOG_DIR = os.path.join(ROOT, "logs")
 
 HELP = (
-    "  /file <path>   attach a file to your next message\n"
+    "  /file <path>   attach a file (works inline too, e.g. 'review /file a.py')\n"
     "  /reset         clear the conversation history\n"
     "  /help          show this help\n"
     "  /exit, /quit   leave"
 )
+
+# Matches a "/file <path>" token anywhere in a message (quoted or bare path).
+FILE_TOKEN_RE = re.compile(r"""/file\s+("[^"]+"|'[^']+'|\S+)""")
 
 
 def _check_setup() -> bool:
@@ -59,24 +67,51 @@ def _check_setup() -> bool:
     return ok
 
 
-def _build_input(history: list, user_msg: str) -> str:
-    if not history:
-        return user_msg
-    transcript = "\n".join(
-        f"{role}: {text}" for role, text in history[-MAX_TURNS_IN_CONTEXT * 2:]
+def _setup_logging() -> str:
+    # INFO+ decisions (difficulty, chosen model, iterations, compression) go to a
+    # file; only WARNING+ reaches the console so the chat stays readable.
+    os.makedirs(LOG_DIR, exist_ok=True)
+    log_path = os.path.join(LOG_DIR, "demo.log")
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.handlers.clear()
+
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setLevel(logging.INFO)
+    fh.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     )
-    return f"Conversation so far:\n{transcript}\n\nUser: {user_msg}"
+    root.addHandler(fh)
+
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.WARNING)
+    ch.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    root.addHandler(ch)
+    return log_path
+
+
+def _extract_files(msg: str):
+    """Pull any '/file <path>' tokens out of a message; return (cleaned, paths)."""
+    paths = []
+
+    def _repl(match):
+        paths.append(match.group(1).strip("\"'"))
+        return " "
+
+    cleaned = FILE_TOKEN_RE.sub(_repl, msg).strip()
+    return cleaned, paths
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
+    log_path = _setup_logging()
 
     if not _check_setup():
         return
 
-    print("agent-client-template chat bot - type /help for commands, /exit to quit.\n")
+    print("agent-client-template chat bot - type /help for commands, /exit to quit.")
+    print(f"(logging INFO to {os.path.relpath(log_path, ROOT)})\n")
 
-    history = []        # list of (role, text)
     pending_files = []  # files attached for the next message
 
     async with AgentClient(
@@ -97,40 +132,41 @@ async def main() -> None:
                 print(HELP + "\n")
                 continue
             if user_msg == "/reset":
-                history.clear()
+                agent.resetConversation()
                 pending_files.clear()
                 print("(conversation cleared)\n")
                 continue
-            if user_msg == "/file" or user_msg.startswith("/file "):
-                parts = user_msg.split(maxsplit=1)
-                if len(parts) < 2 or not parts[1].strip():
-                    print("(usage: /file <path>)\n")
-                    continue
-                path = parts[1].strip().strip('"').strip("'")
+
+            cleaned, paths = _extract_files(user_msg)
+            for path in paths:
                 if os.path.exists(path):
                     pending_files.append(path)
-                    print(f"(attached {os.path.basename(path)})\n")
+                    print(f"(attached {os.path.basename(path)})")
                 else:
-                    print(f"(file not found: {path})\n")
+                    print(f"(file not found: {path})")
+
+            if cleaned == "/file":
+                print("(usage: /file <path>)\n")
                 continue
-            if user_msg.startswith("/"):
+            if not cleaned:
+                # message was only attachments (or empty): wait for the question
+                print()
+                continue
+            if not paths and cleaned.startswith("/"):
                 print("(unknown command - type /help)\n")
                 continue
 
-            prompt = _build_input(history, user_msg)
             files = pending_files[:]
             pending_files.clear()
 
             print("(thinking...)", flush=True)
             try:
-                answer = await agent.ask(prompt, inputFiles=files)
+                answer = await agent.chat(cleaned, inputFiles=files)
             except Exception as e:
                 print(f"bot > [error] {e}\n")
                 continue
 
             print(f"bot > {answer}\n")
-            history.append(("User", user_msg))
-            history.append(("Assistant", answer))
 
     print("bye.")
 

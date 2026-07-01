@@ -61,6 +61,7 @@ class AgentClient:
         historyDir: Optional[str] = None,
         routingStrategy: str = "taskComplex",
         complexityScoreThreshold: int = 3,
+        maxTurnsInContext: int = 6,
     ):
         # apiConfig: list of model dicts or path to a JSON file (injected, so the
         # package never reaches into its own install dir for user config).
@@ -86,6 +87,11 @@ class AgentClient:
         # Score (from _assessComplexity) at/above which a task counts as
         # complex. Higher = stay on cheap models for more tasks.
         self._complexityScoreThreshold = complexityScoreThreshold
+
+        # Rolling multi-turn conversation (see chat()). Persists across ask()
+        # calls; only cleared by resetConversation().
+        self._maxTurnsInContext = maxTurnsInContext
+        self._conversation = []
 
         self._resetState()
 
@@ -416,12 +422,31 @@ class AgentClient:
         self._logger.info(f"History saved to {filepath}")
 
     async def ask(self, inputStr: str, inputFiles: Optional[list] = None) -> str:
-        # Reset per-conversation state so the client can be reused across
-        # independent tasks. The router is left open; lifecycle is owned by the
-        # caller via aclose() or the async context manager.
+        # One-shot: reset per-conversation state so the client can be reused
+        # across independent tasks. The router is left open; lifecycle is owned
+        # by the caller via aclose() or the async context manager.
         self._resetState()
         await self._getInputs(inputStr, inputFiles)
         return await self._actionLoop()
+
+    def _buildConversationInput(self, message: str) -> str:
+        if not self._conversation:
+            return message
+        turns = self._conversation[-self._maxTurnsInContext * 2:]
+        transcript = "\n".join(f"{role}: {text}" for role, text in turns)
+        return f"Conversation so far:\n{transcript}\n\nUser: {message}"
+
+    async def chat(self, message: str, inputFiles: Optional[list] = None) -> str:
+        # Multi-turn: remembers prior turns so the caller only feeds the latest
+        # message. Built on ask(), so difficulty routing / skills / files all
+        # apply per turn.
+        answer = await self.ask(self._buildConversationInput(message), inputFiles)
+        self._conversation.append(("User", message))
+        self._conversation.append(("Assistant", answer))
+        return answer
+
+    def resetConversation(self) -> None:
+        self._conversation = []
 
     async def aclose(self) -> None:
         await self._router.close()

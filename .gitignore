@@ -4,6 +4,7 @@ config/skills.json
 .env
 README.pdf
 history/
+logs/
 
 __pycache__/
 *.pyc
