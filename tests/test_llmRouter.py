@@ -294,7 +294,7 @@ class TestLLMRouterTokenGuard(unittest.IsolatedAsyncioTestCase):
         )
         called = []
 
-        async def fake_call(api, inputStr):
+        async def fake_call(api, inputStr, jsonMode=False):
             called.append(api["modelName"])
             return "ok"
 
@@ -303,6 +303,30 @@ class TestLLMRouterTokenGuard(unittest.IsolatedAsyncioTestCase):
         result = await router.connect("hello", inputToken=2000)
         self.assertEqual(result, "ok")
         self.assertEqual(called, ["big"])  # 'small' was filtered out by the fit guard
+        await router.close()
+
+    async def test_connect_forwards_jsonMode(self):
+        router = self._router(
+            [
+                {
+                    "provider": "x",
+                    "endpointUrl": "http://x",
+                    "modelName": "m",
+                    "maxInputToken": 100000,
+                    "maxOutputToken": 100,
+                    "tier": 1,
+                }
+            ]
+        )
+        captured = {}
+
+        async def fake_call(api, inputStr, jsonMode=False):
+            captured["jsonMode"] = jsonMode
+            return "ok"
+
+        router._callLLM = fake_call
+        await router.connect("hi", jsonMode=True)
+        self.assertTrue(captured["jsonMode"])
         await router.close()
 
 

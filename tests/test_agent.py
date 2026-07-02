@@ -241,6 +241,14 @@ class TestAgentLogic(unittest.TestCase):
         self.agent._matchedSkillCount = 0
         self.assertTrue(self.agent._assessComplexity())
 
+    def test_assessComplexity_large_file_escalates(self):
+        # "review a big file" should route to a stronger model, not the cheapest.
+        self.agent._inputStr = "review this file"
+        self.agent._inputFiles = ["big.py"]
+        self.agent._inputFilesToken = 9000
+        self.agent._matchedSkillCount = 0
+        self.assertTrue(self.agent._assessComplexity())
+
     def test_buildConversationInput_first_turn(self):
         self.agent.resetConversation()
         self.assertEqual(self.agent._buildConversationInput("hi"), "hi")

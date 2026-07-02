@@ -133,10 +133,15 @@ window can't hold the input and uses the first that succeeds:
 - `"taskComplex"` (default) — **difficulty tiering**: easy tasks try the
   lowest-`tier` (cheapest) model first to save cost; hard tasks try the
   highest-`tier` (most capable) first. Difficulty is a free, composite
-  heuristic scored over the *raw task only* (its token length, number of
-  attached files, number of matched skills, and reasoning keywords in English
-  and Chinese) — so injected skill text doesn't skew it. Ties broken by window
-  size. No extra API call is made.
+  heuristic scored over the *raw task* — its token length, **size of attached
+  files** (reviewing/redesigning a big file or project escalates), number of
+  attached files, matched skills, and reasoning keywords (EN/CN) — so injected
+  skill text doesn't skew it. Ties broken by window size. No extra API call.
+
+For the multi-step action loop, the router requests **JSON output mode** from
+providers that support it (OpenAI `response_format`, Google `responseMimeType`,
+Ollama `format`), so even smaller models return valid, properly-escaped JSON and
+the agentic protocol doesn't break on quotes/newlines inside generated code.
 - `"maxTokens"` — always prefer the largest context window.
 - `""` — use config order as-is (the list is the priority).
 

@@ -62,6 +62,7 @@ class llmRouter:
         priority: str = "",
         inputToken=0,
         isComplex=None,
+        jsonMode=False,
     ):
         if modelName:
             if not self.getApi(modelName):
@@ -82,7 +83,7 @@ class llmRouter:
                         f"exceeds maxInputToken {api['maxInputToken']}"
                     )
                     continue
-                answer = await self._callLLM(api, inputStr)
+                answer = await self._callLLM(api, inputStr, jsonMode)
                 logger.info(
                     "Routed to '%s' (tier %s, %s, %s tokens in)",
                     model_name,
@@ -109,17 +110,19 @@ class llmRouter:
             return self.priorityAlgorithmByTaskComplex(models, inputStr, isComplex)
         return self.priorityAlgorithm(models)
 
-    async def _callLLM(self, api: dict, inputStr: str) -> str:
+    async def _callLLM(self, api: dict, inputStr: str, jsonMode: bool = False) -> str:
         protocol = api.get("protocol", "openai")
         if protocol == "anthropic":
-            return await self._callAnthropic(api, inputStr)
+            return await self._callAnthropic(api, inputStr, jsonMode)
         elif protocol == "google":
-            return await self._callGoogle(api, inputStr)
+            return await self._callGoogle(api, inputStr, jsonMode)
         elif protocol == "ollama":
-            return await self._callOllama(api, inputStr)
-        return await self._callOpenAI(api, inputStr)
+            return await self._callOllama(api, inputStr, jsonMode)
+        return await self._callOpenAI(api, inputStr, jsonMode)
 
-    async def _callOpenAI(self, api: dict, inputStr: str) -> str:
+    async def _callOpenAI(
+        self, api: dict, inputStr: str, jsonMode: bool = False
+    ) -> str:
         client = await self._getClient()
         url = api["endpointUrl"].rstrip("/")
         headers = {
@@ -131,13 +134,19 @@ class llmRouter:
             "messages": [{"role": "user", "content": inputStr}],
             "max_tokens": api["maxOutputToken"],
         }
+        if jsonMode:
+            payload["response_format"] = {"type": "json_object"}
 
         response = await client.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
         return data["choices"][0]["message"]["content"]
 
-    async def _callAnthropic(self, api: dict, inputStr: str) -> str:
+    async def _callAnthropic(
+        self, api: dict, inputStr: str, jsonMode: bool = False
+    ) -> str:
+        # The Anthropic Messages API has no response_format flag; JSON is guided
+        # by the prompt and recovered by AgentClient._parseSignal.
         client = await self._getClient()
         url = api["endpointUrl"].rstrip("/")
         headers = {
@@ -159,7 +168,9 @@ class llmRouter:
                 return item["text"]
         raise Exception("No text content in response")
 
-    async def _callGoogle(self, api: dict, inputStr: str) -> str:
+    async def _callGoogle(
+        self, api: dict, inputStr: str, jsonMode: bool = False
+    ) -> str:
         client = await self._getClient()
         base_url = api["endpointUrl"].rstrip("/")
         url = f"{base_url}/v1beta/models/{api['modelName']}:generateContent"
@@ -167,9 +178,12 @@ class llmRouter:
             "Content-Type": "application/json",
             "x-goog-api-key": api["apiKey"],
         }
+        generation_config = {"maxOutputTokens": api["maxOutputToken"]}
+        if jsonMode:
+            generation_config["responseMimeType"] = "application/json"
         payload = {
             "contents": [{"parts": [{"text": inputStr}]}],
-            "generationConfig": {"maxOutputTokens": api["maxOutputToken"]},
+            "generationConfig": generation_config,
         }
 
         response = await client.post(url, json=payload, headers=headers)
@@ -177,7 +191,9 @@ class llmRouter:
         data = response.json()
         return data["candidates"][0]["content"]["parts"][0]["text"]
 
-    async def _callOllama(self, api: dict, inputStr: str) -> str:
+    async def _callOllama(
+        self, api: dict, inputStr: str, jsonMode: bool = False
+    ) -> str:
         client = await self._getClient()
         url = api["endpointUrl"].rstrip("/")
         headers = {"Content-Type": "application/json"}
@@ -187,6 +203,8 @@ class llmRouter:
             "stream": False,
             "options": {"num_predict": api["maxOutputToken"]},
         }
+        if jsonMode:
+            payload["format"] = "json"
 
         response = await client.post(url, json=payload, headers=headers, timeout=120.0)
         response.raise_for_status()

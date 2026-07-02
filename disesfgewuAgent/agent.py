@@ -36,6 +36,9 @@ COMPLEX_KEYWORDS = (
     "step by step",
     "trade-off",
     "tradeoff",
+    "review",
+    "redesign",
+    "audit",
     "分析",
     "證明",
     "推導",
@@ -52,6 +55,9 @@ COMPLEX_KEYWORDS = (
     "演算法",
     "實作",
     "為什麼",
+    "審查",
+    "檢視",
+    "重設計",
 )
 
 
@@ -195,6 +201,12 @@ class AgentClient:
 
         if self._countTokens(task) > 5000:
             score += 1
+        # Large attached material (reviewing/redesigning a big file or project)
+        # is a strong signal — route it to a stronger model, not the cheapest.
+        if self._inputFilesToken > 8000:
+            score += 2
+        elif self._inputFilesToken > 2000:
+            score += 1
         if len(self._inputFiles) >= 3:
             score += 1
         if self._matchedSkillCount >= 3:
@@ -202,10 +214,13 @@ class AgentClient:
 
         return score >= self._complexityScoreThreshold
 
-    async def _connect(self, inputFull: str) -> str:
+    async def _connect(self, inputFull: str, jsonMode: bool = False) -> str:
         inputToken = self._countTokens(inputFull)
         return await self._router.connect(
-            inputFull, inputToken=inputToken, isComplex=self._taskIsComplex
+            inputFull,
+            inputToken=inputToken,
+            isComplex=self._taskIsComplex,
+            jsonMode=jsonMode,
         )
 
     def _buildPrompt(self, informations: str = "") -> str:
@@ -306,16 +321,19 @@ class AgentClient:
         fixed_tokens = self._countTokens(fixed_section)
         chunk_budget = available - fixed_tokens
         if chunk_budget <= 0:
-            return await self._connect(prompt)
+            return await self._connect(prompt, jsonMode=True)
 
         chunks = self._splitTaskInputAlgorithm(task_input, chunk_budget)
         if len(chunks) <= 1:
-            return await self._connect(prompt)
+            return await self._connect(prompt, jsonMode=True)
 
         self._logger.info(f"Splitting into {len(chunks)} chunks")
 
         tasks = [
-            self._connect(f"{fixed_section}[TASK - Part {i+1}/{len(chunks)}]\n{chunk}")
+            self._connect(
+                f"{fixed_section}[TASK - Part {i+1}/{len(chunks)}]\n{chunk}",
+                jsonMode=True,
+            )
             for i, chunk in enumerate(chunks)
         ]
         responses = await asyncio.gather(*tasks, return_exceptions=True)
@@ -346,7 +364,7 @@ class AgentClient:
             f"[TASK]\nMerge the above partial responses into a complete answer. "
             f"Respond in JSON format."
         )
-        return await self._connect(merge_prompt)
+        return await self._connect(merge_prompt, jsonMode=True)
 
     async def _action(self, informations: str = "") -> str:
         prompt = self._buildPrompt(informations)
@@ -362,7 +380,7 @@ class AgentClient:
             prompt_tokens = self._countTokens(prompt)
 
         if prompt_tokens <= available:
-            return await self._connect(prompt)
+            return await self._connect(prompt, jsonMode=True)
 
         self._logger.info(
             f"Prompt too large ({prompt_tokens} > {available}), splitting"
