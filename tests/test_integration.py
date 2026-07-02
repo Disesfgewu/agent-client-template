@@ -123,6 +123,22 @@ class TestAgentEndToEnd(unittest.IsolatedAsyncioTestCase):
         self.assertIn("5050", result)
         print(f"\n[e2e code-exec] {result[:160]}")
 
+    async def test_agent_uses_shell(self):
+        agent = AgentClient(
+            SKILLS_CONFIG,
+            SKILLS_DIR,
+            API_CONFIG,
+            historyDir=os.path.join(ROOT, "history"),
+            enableShell=True,
+        )
+        async with agent:
+            result = await agent.ask(
+                'Use the shell (execute with language "shell") to run exactly: '
+                "echo ROUTER_MARKER_42 -- then report what it printed."
+            )
+        self.assertIn("ROUTER_MARKER_42", result)
+        print(f"\n[e2e shell] {result[:120]}")
+
     async def test_agent_edits_a_file(self):
         work_dir = tempfile.mkdtemp()
         try:

@@ -63,6 +63,7 @@ agent-client-template/
 ├── skills/
 │   ├── code-review.md        # a skill = markdown + YAML frontmatter
 │   ├── code-editing.md       # lets the agent modify files (with code exec)
+│   ├── shell-commands.md     # search/navigate a codebase via grep/find/...
 │   ├── debugging.md
 │   └── testing.md
 ├── history/                  # per-session JSON logs (gitignored)
@@ -269,7 +270,12 @@ asyncio.run(main())
 - `maxTurnsInContext` — how many past turns `chat()` feeds back as context.
 - `enableCodeExecution` — allow the agent to run Python it writes (see below).
   **Off by default.**
-- `codeExecutionTimeout` — per-run timeout (seconds) for executed code.
+- `enableShell` — allow the agent to run shell commands (grep/find/...). **Off by default.**
+- `codeExecutionTimeout` — per-run timeout (seconds) for executed code/commands.
+- `onEvent(event)` — observe each step of the loop (planning / reasoning / execute
+  / output) for a live UI.
+- `onApprove(action) -> bool` — safety gate called before any execution; return
+  falsy to block it.
 
 Whatever the order, the router always **skips models whose context window is
 too small for the input** and uses the first one that both ranks well and
@@ -298,18 +304,32 @@ Key methods:
 > reused across independent tasks. Manage the connection with `async with` or by
 > calling `aclose()` when done.
 
-### Code execution (opt-in)
+### Execution & tools (opt-in)
 
-With `enableCodeExecution=True`, the response protocol gains an `execute` action:
-the model can emit `{"status": "execute", "language": "python", "code": "..."}`,
-the agent runs it in a subprocess (with `codeExecutionTimeout`), feeds the
-stdout/stderr back, and the model then returns a `done` answer with the output
-and an explanation. This is how the agent *actually computes* results instead of
-guessing them.
+The **package provides the environment**; **skills teach which commands to use**.
+The response protocol gains an `execute` action —
+`{"status": "execute", "language": "python|shell", "code": "..."}` — and the agent
+runs it, feeds stdout/stderr back, then returns a `done` answer with the output
+and an explanation. This is how the agent *actually computes / searches / edits*
+instead of guessing.
 
-> ⚠️ **Security:** this runs LLM-generated code on your machine. It is **off by
-> default** and should only be enabled for trusted, local use (as in
-> [`demo.py`](demo.py)). There is no sandbox beyond the subprocess + timeout.
+- `enableCodeExecution=True` — run **Python** the agent writes (subprocess + `codeExecutionTimeout`).
+- `enableShell=True` — run **shell commands** (`grep`, `find`, `ls`, `cat`, `sed`, ...),
+  via `bash` when available so POSIX syntax works cross-platform (Git Bash on Windows).
+- Bundled skills drive these: `shell-commands` (search/navigate a codebase) and
+  `code-editing` (Codex-style read → patch → write → verify).
+
+**Safety gate.** Pass `onApprove(action) -> bool`; the agent calls it *before*
+running anything and skips the action if it returns falsy. The embedding app owns
+the policy — an interactive prompt (see [`demo.py`](demo.py): `y / N / always`), an
+allow-list, or auto-approve. `onEvent(event)` streams each step (planning,
+reasoning, execute, output) so a UI can render the loop live.
+
+> ⚠️ **Security:** execution runs LLM-generated code/commands on your machine.
+> Both flags are **off by default**; there is no sandbox beyond subprocess +
+> timeout, so combine them with `onApprove` (or an allow-list) for untrusted use.
+> As an embeddable **package** (not a standalone product), the host application
+> decides what is permitted.
 
 ---
 

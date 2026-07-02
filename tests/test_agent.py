@@ -289,6 +289,23 @@ class TestAgentLogic(unittest.TestCase):
         self.agent._onEvent = bad
         self.agent._emit({"type": "step"})  # must not raise
 
+    def test_approve_allows_when_no_hook(self):
+        self.agent._onApprove = None
+        self.assertTrue(self.agent._approve({"type": "execute"}))
+
+    def test_approve_respects_hook(self):
+        self.agent._onApprove = lambda action: False
+        self.assertFalse(self.agent._approve({"type": "execute"}))
+        self.agent._onApprove = lambda action: True
+        self.assertTrue(self.agent._approve({"type": "execute"}))
+
+    def test_approve_denies_on_hook_error(self):
+        def bad(action):
+            raise RuntimeError("boom")
+
+        self.agent._onApprove = bad
+        self.assertFalse(self.agent._approve({"type": "execute"}))
+
 
 class TestAgentCodeExecution(unittest.IsolatedAsyncioTestCase):
     """Offline: exercises the code executor directly (runs real subprocesses)."""
@@ -315,10 +332,49 @@ class TestAgentCodeExecution(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(rc, 0)
         self.assertIn("boom", err)
 
-    async def test_execute_rejects_non_python(self):
-        out, err, rc = await self._agent()._executeCode("echo hi", language="bash")
+    async def test_execute_rejects_unknown_language(self):
+        out, err, rc = await self._agent()._executeCode("puts 1", language="ruby")
         self.assertEqual(rc, -1)
         self.assertIn("Unsupported", err)
+
+    async def test_shell_disabled_by_default(self):
+        out, err, rc = await self._agent()._executeCode("echo hi", language="shell")
+        self.assertEqual(rc, -1)
+        self.assertIn("disabled", err)
+
+
+class TestAgentShellExecution(unittest.IsolatedAsyncioTestCase):
+    """Offline: shell execution env (runs real shell commands)."""
+
+    def _agent(self):
+        config_path = os.path.join(ROOT, "config", "skills.json")
+        skills_dir = os.path.join(ROOT, "skills")
+        return AgentClient(
+            config_path, skills_dir, SAMPLE_API_CONFIG, enableShell=True
+        )
+
+    async def test_shell_echo(self):
+        out, err, rc = await self._agent()._executeCode(
+            "echo hello123", language="shell"
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("hello123", out)
+
+    async def test_shell_grep_finds_pattern(self):
+        if not shutil.which("bash"):
+            self.skipTest("bash not available for POSIX grep")
+        work = tempfile.mkdtemp()
+        try:
+            p = os.path.join(work, "f.txt")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("alpha\nNEEDLE here\nbeta\n")
+            out, err, rc = await self._agent()._executeCode(
+                f"grep -n NEEDLE '{p}'", language="shell"
+            )
+            self.assertEqual(rc, 0)
+            self.assertIn("NEEDLE", out)
+        finally:
+            shutil.rmtree(work)
 
 
 @unittest.skipUnless(live_api_available(), SKIP_REASON)

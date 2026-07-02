@@ -115,10 +115,12 @@ def _on_event(event: dict) -> None:
         reasoning = event.get("reasoning")
         if reasoning:
             console.print(f"[yellow]> reasoning[/yellow] [dim]{reasoning}[/dim]")
+        lang = event.get("language", "python")
+        lexer = "bash" if lang in ("shell", "bash", "sh", "cmd", "powershell", "pwsh") else "python"
         console.print(
             Panel(
-                Syntax(event.get("code", ""), "python", theme="monokai", word_wrap=True),
-                title="[bold]> run python[/bold]",
+                Syntax(event.get("code", ""), lexer, theme="monokai", word_wrap=True),
+                title=f"[bold]> run {lang}[/bold]",
                 border_style="yellow",
                 padding=(0, 1),
             )
@@ -138,6 +140,23 @@ def _on_event(event: dict) -> None:
                 padding=(0, 1),
             )
         )
+
+
+_APPROVE_STATE = {"all": False}
+
+
+def _approve(action: dict) -> bool:
+    """Approval gate shown before the agent runs code/commands (safety)."""
+    if _APPROVE_STATE["all"]:
+        return True
+    lang = action.get("language", "code")
+    ans = console.input(
+        f"[bold yellow]run this {lang}? [/bold yellow][dim]y / N / a(lways)[/dim] "
+    ).strip().lower()
+    if ans in ("a", "always"):
+        _APPROVE_STATE["all"] = True
+        return True
+    return ans in ("y", "yes")
 
 
 async def main() -> None:
@@ -163,7 +182,9 @@ async def main() -> None:
         API_CONFIG,
         historyDir=HISTORY_DIR,
         enableCodeExecution=True,
+        enableShell=True,
         onEvent=_on_event,
+        onApprove=_approve,  # ask before running anything (safety gate)
     ) as agent:
         while True:
             try:
@@ -206,9 +227,9 @@ async def main() -> None:
             files = pending_files[:]
             pending_files.clear()
 
+            console.print("[dim]working...[/dim]")
             try:
-                with console.status("[dim]agent working...[/dim]", spinner="dots"):
-                    answer = await agent.chat(cleaned, inputFiles=files)
+                answer = await agent.chat(cleaned, inputFiles=files)
             except Exception as e:
                 console.print(f"[red]error:[/red] {e}\n")
                 continue

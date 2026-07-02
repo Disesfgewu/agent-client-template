@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -66,8 +67,10 @@ class AgentClient:
         complexityScoreThreshold: int = 3,
         maxTurnsInContext: int = 6,
         enableCodeExecution: bool = False,
+        enableShell: bool = False,
         codeExecutionTimeout: int = 30,
         onEvent=None,
+        onApprove=None,
     ):
         # apiConfig: list of model dicts or path to a JSON file (injected, so the
         # package never reaches into its own install dir for user config).
@@ -99,15 +102,23 @@ class AgentClient:
         self._maxTurnsInContext = maxTurnsInContext
         self._conversation = []
 
-        # Opt-in code execution. Runs LLM-generated Python in a subprocess with a
-        # timeout. Off by default: only enable for trusted, local use.
+        # Opt-in execution. The system provides the environment (run Python /
+        # run shell commands); skills teach WHICH commands to use (grep, find,
+        # ...). Both off by default: only enable for trusted, local use.
         self._enableCodeExecution = enableCodeExecution
+        self._enableShell = enableShell
         self._codeExecutionTimeout = codeExecutionTimeout
 
         # Optional observer of the agent loop, so a UI can surface each step
         # (planning, running code, observing output). Makes the agentic loop
         # visible instead of hiding it behind a single final answer.
         self._onEvent = onEvent
+
+        # Optional approval gate: called with the action about to run; return a
+        # falsy value to block it. The embedding app owns the policy (interactive
+        # prompt, allow-list, auto-approve) — this is what makes execution safe
+        # to embed. None = auto-approve (suitable for trusted / non-interactive).
+        self._onApprove = onApprove
 
         self._resetState()
 
@@ -118,6 +129,15 @@ class AgentClient:
             self._onEvent(event)
         except Exception:
             self._logger.debug("onEvent handler raised", exc_info=True)
+
+    def _approve(self, action: dict) -> bool:
+        if self._onApprove is None:
+            return True
+        try:
+            return bool(self._onApprove(action))
+        except Exception:
+            self._logger.debug("onApprove handler raised; denying", exc_info=True)
+            return False
 
     def _resetState(self) -> None:
         # Per-conversation accumulators; cleared at the start of every ask() so
@@ -202,15 +222,23 @@ class AgentClient:
             "reasoning explicitly at each step, and only use 'done' once the whole "
             "task is finished. For a simple task, answer with 'done' directly."
         )
-        if self._enableCodeExecution:
+        if self._enableCodeExecution or self._enableShell:
+            langs = []
+            if self._enableCodeExecution:
+                langs.append('"python" (run a script)')
+            if self._enableShell:
+                langs.append(
+                    '"shell" (run a shell command: grep, find, ls, cat, sed, ...)'
+                )
             instructions += (
-                '\nTo actually run code, use:\n'
-                '{"status": "execute", "language": "python", "code": "...", '
+                '\nTo actually run code or commands, use:\n'
+                '{"status": "execute", "language": "<lang>", "code": "...", '
                 '"reasoning": "..."}\n'
-                'Use "execute" whenever the task needs real computation, data '
-                "processing, file inspection, or verification. Print results to "
-                "stdout. The code's stdout/stderr is returned to you, then you "
-                "continue reasoning or finish with 'done'."
+                "Available languages: " + "; ".join(langs) + ". "
+                "Use this whenever the task needs real computation, searching or "
+                "navigating the codebase, file inspection, or verification. Prefer "
+                "POSIX/bash syntax for shell. The stdout/stderr is returned to "
+                "you, then you continue reasoning or finish with 'done'."
             )
         sections.append(instructions)
 
@@ -378,7 +406,7 @@ class AgentClient:
             signal = self._parseSignal(response)
             status = signal.get("status", "done")
 
-            if status == "execute" and self._enableCodeExecution:
+            if status == "execute" and (self._enableCodeExecution or self._enableShell):
                 code = signal.get("code", "")
                 language = signal.get("language", "python")
                 self._logger.info(f"Executing {language} code ({len(code)} chars)")
@@ -390,6 +418,28 @@ class AgentClient:
                         "reasoning": signal.get("reasoning", ""),
                     }
                 )
+                if not self._approve(
+                    {"type": "execute", "language": language, "code": code}
+                ):
+                    self._logger.info("Execution denied by approval hook")
+                    denied = "Execution denied by the user."
+                    self._emit(
+                        {
+                            "type": "execution_result",
+                            "stdout": "",
+                            "stderr": denied,
+                            "exit_code": -1,
+                        }
+                    )
+                    self._history.append(
+                        {"iteration": iteration, "execution_result": denied}
+                    )
+                    informations = (
+                        denied
+                        + ' The user declined to run that. Try another approach, '
+                        'ask for what you need, or finish with "done".'
+                    )
+                    continue
                 stdout, stderr, rc = await self._executeCode(code, language)
                 self._logger.info(f"Execution finished with exit code {rc}")
                 self._emit(
@@ -520,12 +570,54 @@ class AgentClient:
             except OSError:
                 pass
 
+    def _runShell(self, command: str, lang: str = "shell") -> tuple:
+        # Prefer bash for POSIX commands (grep/find/sed/...) so the same syntax
+        # works cross-platform (Git Bash on Windows). Fall back to PowerShell or
+        # the native shell.
+        try:
+            bash = shutil.which("bash")
+            if lang in ("shell", "bash", "sh") and bash:
+                proc = subprocess.run(
+                    [bash, "-c", command],
+                    capture_output=True,
+                    text=True,
+                    timeout=self._codeExecutionTimeout,
+                )
+            elif lang in ("powershell", "pwsh"):
+                proc = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", command],
+                    capture_output=True,
+                    text=True,
+                    timeout=self._codeExecutionTimeout,
+                )
+            else:
+                proc = subprocess.run(
+                    command,
+                    shell=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=self._codeExecutionTimeout,
+                )
+            return proc.stdout, proc.stderr, proc.returncode
+        except subprocess.TimeoutExpired:
+            return "", f"Timed out after {self._codeExecutionTimeout}s", -1
+        except Exception as e:
+            return "", f"Shell error: {e}", -1
+
     async def _executeCode(self, code: str, language: str = "python") -> tuple:
         # Returns (stdout, stderr, exit_code). Runs in a worker thread so the
-        # event loop is not blocked by the subprocess.
-        if language.lower() not in ("python", "py"):
-            return "", f"Unsupported language: {language}", -1
-        return await asyncio.to_thread(self._runPythonSubprocess, code)
+        # event loop is not blocked. The system provides the environment; the
+        # agent generates the actual Python / shell commands (taught by skills).
+        lang = language.lower()
+        if lang in ("python", "py"):
+            if not self._enableCodeExecution:
+                return "", "Python execution is disabled", -1
+            return await asyncio.to_thread(self._runPythonSubprocess, code)
+        if lang in ("shell", "bash", "sh", "powershell", "pwsh", "cmd"):
+            if not self._enableShell:
+                return "", "Shell execution is disabled", -1
+            return await asyncio.to_thread(self._runShell, code, lang)
+        return "", f"Unsupported language: {language}", -1
 
     async def _backupHistory(self):
         if not self._historyDir:
