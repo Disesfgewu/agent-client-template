@@ -232,6 +232,76 @@ class TestInputFileManagerPptx(unittest.TestCase):
         self.assertEqual(result, "")
 
 
+
+
+class TestInputFileManagerImages(unittest.TestCase):
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def test_extract_png_metadata(self):
+        filepath = os.path.join(self.test_dir, "image.png")
+        png = (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR"
+            b"\x00\x00\x00\x02"
+            b"\x00\x00\x00\x03"
+            b"\x08\x02\x00\x00\x00"
+            b"\x00\x00\x00\x00"
+            b"\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        with open(filepath, "wb") as f:
+            f.write(png)
+
+        result = inputFileManager.extract(filepath)
+
+        self.assertIn("[Image]", result)
+        self.assertIn("format: PNG", result)
+        self.assertIn("dimensions: 2x3", result)
+        self.assertIn("no OCR", result)
+
+
+class TestInputFileManagerArchives(unittest.TestCase):
+    def setUp(self):
+        self.test_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.test_dir)
+
+    def test_extract_zip_text_members(self):
+        import zipfile
+
+        filepath = os.path.join(self.test_dir, "bundle.zip")
+        with zipfile.ZipFile(filepath, "w") as zf:
+            zf.writestr("notes/readme.md", "# Notes\nArchive content")
+            zf.writestr("image.bin", b"\x00\x01")
+
+        result = inputFileManager.extract(filepath)
+
+        self.assertIn("[Archive: zip]", result)
+        self.assertIn("[Archive member: notes/readme.md]", result)
+        self.assertIn("Archive content", result)
+        self.assertIn("unsupported member type", result)
+
+    def test_extract_tar_gz_text_members(self):
+        import io
+        import tarfile
+
+        filepath = os.path.join(self.test_dir, "bundle.tar.gz")
+        data = b"hello from tar"
+        with tarfile.open(filepath, "w:gz") as tf:
+            info = tarfile.TarInfo("docs/info.txt")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        result = inputFileManager.extract(filepath)
+
+        self.assertIn("[Archive: tar.gz]", result)
+        self.assertIn("[Archive member: docs/info.txt]", result)
+        self.assertIn("hello from tar", result)
+
 class TestInputFileManagerErrors(unittest.TestCase):
     def test_extract_file_not_found(self):
         with self.assertRaises(FileNotFoundError) as context:

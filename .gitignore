@@ -5,6 +5,7 @@ config/skills.json
 README.pdf
 history/
 logs/
+.agent/
 
 __pycache__/
 *.pyc

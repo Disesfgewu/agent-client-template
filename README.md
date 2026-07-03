@@ -5,7 +5,7 @@ A skills-driven, multi-provider LLM agent client you can use as a template.
 Give it a task (optionally with files), and it will:
 
 1. **Retrieve relevant skills** via vector search and inject them into the prompt.
-2. **Read attached files** (pdf / xlsx / docx / pptx, plus any plain-text or
+2. **Read attached files** (pdf / xlsx / docx / pptx / jpg / png / zip / tar / tar.gz, plus any plain-text or
    source file) into context.
 3. **Route across LLM providers** (OpenAI / Anthropic / Google / Ollama) with
    difficulty-tiered, token-aware selection and automatic failover.
@@ -26,10 +26,12 @@ Give it a task (optionally with files), and it will:
   - [1. Models & API endpoints](#1-models--api-endpoints)
   - [2. Embedding provider](#2-embedding-provider)
   - [3. Skills](#3-skills)
+- [Research-grounded skill design](#research-grounded-skill-design)
 - [Usage](#usage)
 - [How it works](#how-it-works)
 - [Testing](#testing)
 - [Notes & limitations](#notes--limitations)
+- [References](#references)
 
 ---
 
@@ -42,7 +44,7 @@ Four modules, orchestrated by `AgentClient`:
 | `disesfgewuAgent/agent.py` | `AgentClient` | Orchestration: prompt building, token accounting, splitting, the iteration loop, context compression, history. |
 | `disesfgewuAgent/llmRouter.py` | `llmRouter` | Multi-provider routing across the `openai` / `anthropic` / `google` / `ollama` protocols, with token-aware selection and failover. |
 | `disesfgewuAgent/skillLoader.py` | `skillLoader` | Skill RAG: parse `skills/*.md`, embed descriptions, and run FAISS similarity search. |
-| `disesfgewuAgent/inputFileManager.py` | `inputFileManager` | Extract plain text from txt / md / pdf / xlsx / docx / pptx. |
+| `disesfgewuAgent/inputFileManager.py` | `inputFileManager` | Extract text/metadata from txt / md / pdf / xlsx / docx / pptx / jpg / png / zip / tar / tar.gz. |
 
 ---
 
@@ -54,7 +56,7 @@ agent-client-template/
 │   ├── agent.py              # AgentClient orchestrator
 │   ├── llmRouter.py          # multi-provider router
 │   ├── skillLoader.py        # skill embedding + FAISS search
-│   └── inputFileManager.py   # file -> text extraction
+│   └── inputFileManager.py   # file -> text/metadata/archive extraction
 ├── config/
 │   ├── api.example.json      # template: copy to api.local.json
 │   ├── api.local.json        # YOUR models + keys (gitignored)
@@ -87,6 +89,10 @@ pip install .
 pip install -e .
 ```
 
+Optional extras: `pip install ".[demo]"` (the `rich` CLI TUI) and
+`pip install ".[web]"` (the `ddgs` search library used by the `web-research`
+skill).
+
 Or just install the runtime dependencies and run from a checkout:
 
 ```bash
@@ -95,14 +101,16 @@ pip install -r requirements.txt
 
 Requires Python 3.9+. Configuration (models, keys, skills) is **never** bundled
 into the package — you inject it at runtime (see below), so the same install
-works from a checkout or from site-packages.
+works from a checkout or from site-packages. The **default skills** *are* bundled
+in the package and bootstrap into `./skills/` (with a private `./.agent/skills.json`
+registry) the first time you construct an agent without skill paths.
 
 ---
 
 ## Configuration
 
 There are three things to configure: **models**, an **embedding provider**, and
-your **skills**. The `config/*.local`/`*.json` and `.env` files are gitignored,
+optionally your **skills**. Bundled default skills can bootstrap themselves when no skill paths are supplied. The `config/*.local`/`*.json` and `.env` files are gitignored,
 so your keys never get committed.
 
 ```bash
@@ -207,11 +215,36 @@ To **add a new skill**:
 The `skills.json` index is the source of truth for which skills exist; the
 `embedding` field is filled in automatically.
 
+**Bundled default skills.** The package also includes `disesfgewuAgent/default_skills/*.md`. If `AgentClient` is created without `skillConfigPath` or `skillFolderPath`, it calls `bootstrap_default_skills()`, copies the bundled skills into `./skills/`, and creates a private local registry at `./.agent/skills.json`. That private registry is where embeddings are cached, so runtime config does not need to be committed or exposed. `config/skills.example.json` remains a shareable template; `config/skills.json` and `.agent/` are local-only.
+
+```python
+agent = AgentClient(apiConfig=models)  # auto-creates ./skills and ./.agent/skills.json
+```
+
 **Code-editing skill.** The bundled `code-editing` skill turns the agent into a
 Codex-style code editor: when a task asks to modify a file (and
 `enableCodeExecution=True`), it reads the file, applies a minimal targeted patch,
 writes it back to disk, and verifies — all via `execute` steps. Attached files
 now carry their path in the `[FILES]` section so the agent knows where to write.
+
+### Research-grounded skill design
+
+The bundled skill set follows a lightweight `Metadata + Instructions + Resources` model. In this repository, the metadata that matters most for retrieval is the YAML `description`, because `skillLoader` embeds that field and uses FAISS similarity search before the Markdown body is injected.
+
+The practical design target is **CP-grounding**: maximize useful task coverage and grounded answers per injected token. A good skill should be easy to retrieve, specific enough to avoid overlap, short enough to fit prompt budgets, explicit about evidence, and conservative about state-changing tools.
+
+| Design concern | Local rule |
+| --- | --- |
+| Demand fit | Prioritize high-demand workflows such as web research, code generation/review, data analysis, document/file work, and debugging. |
+| Retrieval fit | Put realistic trigger terms in `description`; body-only trigger wording is too late for selection. |
+| Grounding fit | Require evidence collection, citations, local file inspection, calculation checks, or validation steps where the task depends on facts. |
+| Token cost | Keep operational instructions concise; move long references, schemas, templates, or scripts into resources when needed. |
+| Redundancy cost | Split skills only when they serve distinct intents; merge near-duplicates that compete for the same query. |
+| Risk cost | Classify operations as L0-L3 and require approval/dry-run for writes, execution, external export, deployment, database mutation, or financial actions. |
+
+The `skill-creator` skill is the default entry point for creating or revising skills in this repo: it defines frontmatter, body structure, resource boundaries, registry updates, and validation steps. The `skills-optimize` skill then encodes the CP-grounding audit model and exposes an API-shaped operation contract for future tooling: `audit`, `register`, `lint`, `retrieve_test`, `suggest_rewrite`, `apply_rewrite`, and `score_cp_grounding`.
+
+Two security skills add a stricter control layer: `agent-skill-security-audit` classifies skills into the 6-category / 20-subcategory taxonomy and assigns L0-L3 risk under worst-case interpretation; `agent-action-safety-control` gates runtime actions with an action manifest, deny-by-default L3 rules, scoped confirmation, dry-run preference, rollback planning, and audit logging. This design is intentionally stricter than per-layer or lexical allowlists because OpenClaw security studies show cross-layer composition, malicious skill distribution, prompt injection, and command identity ambiguity can bypass local-only checks.
 
 ---
 
@@ -237,7 +270,7 @@ from disesfgewuAgent import AgentClient
 async def main():
     # All config is injected explicitly — nothing is read from the install dir.
     async with AgentClient(
-        "config/skills.json",       # skill index
+        "config/skills.json",       # skill index (omit to auto-bootstrap bundled default skills)
         "skills",                   # skills directory
         "config/api.local.json",    # model config: a path OR a list of dicts
         contextWindowSize=32000,
@@ -304,10 +337,11 @@ agent = AgentClient("config/skills.json", "skills", models)
 
 Key methods:
 
-- `await agent.ask(inputStr, inputFiles=None) -> dict` — run one independent task.
-- `await agent.chat(message, inputFiles=None) -> dict` — like `ask()` but remembers
-  prior turns (multi-turn conversation); `agent.resetConversation()` clears it.
+- `await agent.ask(inputStr=None, inputFiles=None, systemPrompt="", userPrompt=None) -> dict` — run one independent task. `ask("task")` remains supported; API integrations should prefer explicit `systemPrompt` and `userPrompt`.
+- `await agent.chat(message=None, inputFiles=None, systemPrompt="", userPrompt=None) -> dict` — like `ask()` but remembers prior turns; `agent.resetConversation()` clears it.
 - `await agent.aclose()` — close the underlying HTTP client (or use `async with`).
+
+`systemPrompt` is trusted caller policy for the current run. `userPrompt` is untrusted user content and is scanned before prompt construction for prompt-injection indicators such as instruction override, system prompt extraction, secret exfiltration, unsafe execution, destructive actions, and data/instruction boundary confusion. If flagged, the prompt includes a `[USER PROMPT SECURITY CHECK]` section based on the `prompt-injection-guard` safety skill and instructs the model to treat conflicting content as data.
 
 Both return a **fixed-schema result dict** (JSON-serialisable). A stable core is
 always present; capability-specific fields appear only when that capability is
@@ -372,10 +406,11 @@ reasoning, execute, output) so a UI can render the loop live.
 A single `ask()` runs this pipeline:
 
 1. **Reset state** — clears per-conversation memory/history so the client is reusable.
-2. **Gather inputs** — load the skill index, extract any attached files, and run
+2. **Separate prompt channels** — keep trusted `systemPrompt` separate from untrusted `userPrompt`; scan `userPrompt` for prompt-injection and unsafe-action indicators before building the final prompt.
+3. **Gather inputs** — load the skill index, extract any attached files, and run
    vector search to pick the top matching skills (cosine similarity, default
    `min_score=0.3`, `top_k=3`).
-3. **Iteration loop** (up to 10 by default):
+4. **Iteration loop** (up to 10 by default):
    - Build the prompt from `[SKILLS] / [CONTEXT MEMORY] / [INFORMATIONS FROM LAST] /
      [FILES] / [TASK]`.
    - If context memory exceeds `contextWindowSize`, **compress** it (summarize,
@@ -423,6 +458,20 @@ are guarded by `@unittest.skipUnless(live_api_available(), ...)`, so a fresh
 clone without configuration still gets a green run. They are **not mocked** — they
 exercise the full pipeline against your configured endpoints and consume real API
 quota, so they require the endpoints to be reachable and within rate limits.
+
+---
+
+## References
+
+These papers inform the default skill design, retrieval metadata, CP-grounding objective, and safety gates:
+
+1. George Ling, Shanshan Zhong, and Richard Huang. 2026. *Agent Skills: A Data-Driven Analysis of Claude Skills for Extending Large Language Model Functionality*. arXiv:2602.08004. DOI: https://doi.org/10.48550/arXiv.2602.08004
+2. Zhiyuan Li, Jingzheng Wu, Xiang Ling, Xing Cui, and Tianyue Luo. 2026. *Towards Secure Agent Skills: Architecture, Threat Taxonomy, and Security Analysis*. arXiv:2604.02837. DOI: https://doi.org/10.48550/arXiv.2604.02837
+3. Yi Liu, Weizhe Wang, Ruitao Feng, Yao Zhang, Guangquan Xu, Gelei Deng, Yuekang Li, and Leo Zhang. 2026. *Agent Skills in the Wild: An Empirical Study of Security Vulnerabilities at Scale*. arXiv:2601.10338. DOI: https://doi.org/10.48550/arXiv.2601.10338
+4. Haoyu Gao, Jai Lal Lulla, Hong Yi Lin, Sebastian Baltes, Christoph Treude, and Mansooreh Zahedi. 2026. *From Registry to Repository: How AI Agent Skills Are Written, Adapted, and Maintained*. arXiv:2607.00911. DOI: https://doi.org/10.48550/arXiv.2607.00911
+5. Yuntao Wang, Jianle Ba, Han Liu, Yanghe Pan, Jintao Wei, Zhou Su, Tom H. Luan, and Linkang Du. 2026. *Security of OpenClaw Agents: Fundamentals, Attacks, and Countermeasures*. arXiv:2605.25435. DOI: https://doi.org/10.48550/arXiv.2605.25435
+6. Surada Suwansathit, Yuxuan Zhang, and Guofei Gu. 2026. *A Security Analysis of the OpenClaw AI Agent Framework*. arXiv:2603.27517. DOI: https://doi.org/10.48550/arXiv.2603.27517
+7. Bowen Wei, Yunbei Zhang, Jinhao Pan, Kai Mei, Xiao Wang, Jihun Hamm, Ziwei Zhu, and Yingqiang Ge. 2026. *ClawSafety: "Safe" LLMs, Unsafe Agents*. arXiv:2604.01438. DOI: https://doi.org/10.48550/arXiv.2604.01438
 
 ---
 

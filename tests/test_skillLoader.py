@@ -3,10 +3,13 @@ import asyncio
 import json
 import sys
 import os
+import tempfile
+import shutil
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from disesfgewuAgent.skillLoader import skillLoader
+from disesfgewuAgent.defaultSkills import bootstrap_default_skills
 from tests.live_api import live_api_available, SKIP_REASON
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -44,9 +47,52 @@ class TestDefaultSkills(unittest.TestCase):
             os.path.join(ROOT, "config", "skills.example.json"), encoding="utf-8"
         ) as f:
             registry = json.load(f)
-        for name in ("sql", "computation", "general-tasks", "code-editing"):
+        for name in (
+            "sql",
+            "computation",
+            "general-tasks",
+            "code-editing",
+            "web-frontend-design",
+            "web-frontend-code-review",
+            "flutter-frontend-design",
+            "flutter-frontend-code-review",
+            "mobile-code-review",
+            "backend-design",
+            "database-review",
+            "web-research",
+            "data-analysis",
+            "document-ingestion",
+            "file-io",
+            "skills-optimize",
+            "skill-creator",
+            "prompt-injection-guard",
+            "agent-skill-security-audit",
+            "agent-action-safety-control",
+        ):
             self.assertIn(name, registry)
 
+
+
+class TestDefaultSkillBootstrap(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.temp_dir)
+
+    def test_bootstrap_creates_private_registry_and_skills(self):
+        config_path, skills_dir = bootstrap_default_skills(base_dir=self.temp_dir)
+
+        self.assertTrue(os.path.exists(config_path))
+        self.assertTrue(os.path.isdir(skills_dir))
+        self.assertIn(os.path.join(self.temp_dir, ".agent"), config_path)
+        self.assertTrue(os.path.exists(os.path.join(skills_dir, "skill-creator.md")))
+
+        with open(config_path, encoding="utf-8") as f:
+            registry = json.load(f)
+        self.assertIn("skill-creator", registry)
+        self.assertIn("prompt-injection-guard", registry)
+        self.assertNotIn("embedding", registry["skill-creator"])
 
 class TestSkillLoaderLogic(unittest.TestCase):
     def test_parse_frontmatter_valid(self):
