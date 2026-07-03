@@ -11,9 +11,7 @@ tags:
 
 # Code Editing
 
-Apply changes to source files safely and precisely, like a coding agent. You do
-this by writing small Python scripts and running them with the `execute` action
-(read the file, patch it, write it back, verify).
+Apply changes to source files safely and precisely, like a coding agent.
 
 ## When to use
 - The task asks to modify, fix, refactor, rename, or add/remove code in a file.
@@ -21,28 +19,25 @@ this by writing small Python scripts and running them with the `execute` action
 
 ## Workflow
 
-1. **Read the current file** with an `execute` step, so you edit the real content:
-   ```python
-   path = r"<the path shown in [FILES] or given in the task>"
-   src = open(path, encoding="utf-8").read()
-   print(src)
+1. **Read the current file first** (with `execute` shell `cat`/`sed`, or `execute`
+   python `open(path).read()`), so you know the exact snippet to change:
+   ```json
+   {"status": "execute", "language": "shell", "code": "sed -n '1,80p' <path>"}
    ```
 
-2. **Plan a minimal, targeted change.** Preserve everything unrelated. Replace the
-   smallest span that must change; do not rewrite the whole file.
+2. **Plan a minimal, targeted change.** Preserve everything unrelated. Change the
+   smallest span that must change; never rewrite the whole file.
 
-3. **Apply the edit and write it back** with an `execute` step:
-   ```python
-   old = "<exact snippet to replace>"
-   new = "<replacement snippet>"
-   assert src.count(old) == 1, f"need exactly one match, found {src.count(old)}"
-   open(path, "w", encoding="utf-8").write(src.replace(old, new, 1))
-   print("edit applied")
+3. **Apply the edit with the `edit_file` action** (the system computes a diff,
+   applies it, and records the change):
+   ```json
+   {"status": "edit_file", "path": "<path>", "old": "<exact snippet, must occur once>", "new": "<replacement>", "reasoning": "..."}
    ```
    If `old` is not unique, include more surrounding context until it matches once.
+   (If `edit_file` is unavailable, fall back to `execute` python `open(path,'w')`.)
 
-4. **Verify** with another `execute` step: re-read the file, import/run it, or run
-   the tests. If verification fails, iterate until it passes.
+4. **Verify** with an `execute` step: re-read the file, import/run it, or run the
+   tests. If verification fails, iterate until it passes.
 
 5. **Report** in your final `done` answer: which file changed, what changed, and why.
 

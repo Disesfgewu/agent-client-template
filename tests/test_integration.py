@@ -56,15 +56,15 @@ class TestAgentEndToEnd(unittest.IsolatedAsyncioTestCase):
             result = await agent.ask(
                 "What is the capital of Japan? Reply with one word."
             )
-        self.assertIsInstance(result, str)
-        self.assertIn("tokyo", result.lower())
-        print(f"\n[e2e simple] {result[:120]}")
+        self.assertEqual(result["status"], "done")
+        self.assertIn("tokyo", result["answer"].lower())
+        print(f"\n[e2e simple] {result['answer'][:120]}")
 
     async def test_arithmetic_answer(self):
         async with self._agent() as agent:
             result = await agent.ask("What is 21 + 21? Reply with just the number.")
-        self.assertIn("42", result)
-        print(f"\n[e2e arithmetic] {result[:120]}")
+        self.assertIn("42", result["answer"])
+        print(f"\n[e2e arithmetic] {result['answer'][:120]}")
 
     async def test_reuse_same_client_for_independent_tasks(self):
         async with self._agent() as agent:
@@ -73,14 +73,14 @@ class TestAgentEndToEnd(unittest.IsolatedAsyncioTestCase):
 
             second = await agent.ask("What is 10 minus 4? Reply with just the number.")
 
-        self.assertIsInstance(first, str)
-        self.assertGreater(len(first), 0)
-        self.assertIn("6", second)
+        self.assertGreater(len(first["answer"]), 0)
+        self.assertIn("6", second["answer"])
         # State was reset before the second task: history reflects the second
         # run only, not the accumulation of both.
         self.assertGreater(len(history_after_first), 0)
         self.assertLessEqual(len(agent._history), agent._maxIterations)
-        print(f"\n[e2e reuse] first={first[:40]!r} second={second[:40]!r}")
+        print(f"\n[e2e reuse] first={first['answer'][:40]!r} "
+              f"second={second['answer'][:40]!r}")
 
     async def test_answer_uses_file_content(self):
         work_dir = tempfile.mkdtemp()
@@ -94,8 +94,8 @@ class TestAgentEndToEnd(unittest.IsolatedAsyncioTestCase):
                     "What is the launch code mentioned in the file?",
                     inputFiles=[file_path],
                 )
-            self.assertIn("42", result)
-            print(f"\n[e2e file] {result[:120]}")
+            self.assertIn("42", result["answer"])
+            print(f"\n[e2e file] {result['answer'][:120]}")
         finally:
             shutil.rmtree(work_dir)
 
@@ -120,8 +120,9 @@ class TestAgentEndToEnd(unittest.IsolatedAsyncioTestCase):
                 '100. Use status "execute" to actually run it, then report the '
                 "numeric result."
             )
-        self.assertIn("5050", result)
-        print(f"\n[e2e code-exec] {result[:160]}")
+        self.assertIn("5050", result["answer"])
+        self.assertGreater(len(result["commands"]), 0)  # it actually ran code
+        print(f"\n[e2e code-exec] {result['answer'][:160]}")
 
     async def test_agent_uses_shell(self):
         agent = AgentClient(
@@ -136,8 +137,8 @@ class TestAgentEndToEnd(unittest.IsolatedAsyncioTestCase):
                 'Use the shell (execute with language "shell") to run exactly: '
                 "echo ROUTER_MARKER_42 -- then report what it printed."
             )
-        self.assertIn("ROUTER_MARKER_42", result)
-        print(f"\n[e2e shell] {result[:120]}")
+        self.assertIn("ROUTER_MARKER_42", result["answer"])
+        print(f"\n[e2e shell] {result['answer'][:120]}")
 
     async def test_agent_edits_a_file(self):
         work_dir = tempfile.mkdtemp()
@@ -165,7 +166,39 @@ class TestAgentEndToEnd(unittest.IsolatedAsyncioTestCase):
             self.assertIn("subtract", content)
             self.assertIn("a - b", content)
             self.assertIn("def add", content)  # existing code preserved
-            print(f"\n[e2e edit] {result[:120]}")
+            print(f"\n[e2e edit] {result['answer'][:120]}")
+        finally:
+            shutil.rmtree(work_dir)
+
+    async def test_edit_file_action_returns_diff(self):
+        work_dir = tempfile.mkdtemp()
+        try:
+            path = os.path.join(work_dir, "conf.py").replace("\\", "/")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("VERSION = 1\n")
+
+            agent = AgentClient(
+                SKILLS_CONFIG,
+                SKILLS_DIR,
+                API_CONFIG,
+                historyDir=os.path.join(ROOT, "history"),
+                mode="coding",
+                enableFileEdit=True,
+            )
+            async with agent:
+                result = await agent.ask(
+                    f'Edit the file "{path}". Emit exactly one edit_file action '
+                    f'that replaces the snippet "VERSION = 1" with "VERSION = 2", '
+                    f"then finish with done."
+                )
+
+            with open(path, encoding="utf-8") as f:
+                content = f.read()
+            self.assertIn("VERSION = 2", content)
+            # the fixed-schema result carries the change + a diff
+            self.assertTrue(result["diffs"])
+            self.assertIn("VERSION = 2", result["diffs"][0]["diff"])
+            print(f"\n[e2e edit_file diff]\n{result['diffs'][0]['diff']}")
         finally:
             shutil.rmtree(work_dir)
 

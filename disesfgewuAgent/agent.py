@@ -1,4 +1,5 @@
 import asyncio
+import difflib
 import json
 import logging
 import os
@@ -72,8 +73,10 @@ class AgentClient:
         routingStrategy: str = "taskComplex",
         complexityScoreThreshold: int = 3,
         maxTurnsInContext: int = 6,
+        mode: str = "general",
         enableCodeExecution: bool = False,
         enableShell: bool = False,
+        enableFileEdit: bool = False,
         codeExecutionTimeout: int = 30,
         onEvent=None,
         onApprove=None,
@@ -111,8 +114,15 @@ class AgentClient:
         # Opt-in execution. The system provides the environment (run Python /
         # run shell commands); skills teach WHICH commands to use (grep, find,
         # ...). Both off by default: only enable for trusted, local use.
+        # Free-form role/profile label (e.g. "general", "coding", "sql",
+        # "research"). Used to frame the prompt and tag the result; useful as an
+        # agent's role when composing several into a crew. It does NOT gate the
+        # coding fields — those follow the enabled capabilities below, so a
+        # generic agent simply never returns diffs/commands.
+        self._mode = mode
         self._enableCodeExecution = enableCodeExecution
         self._enableShell = enableShell
+        self._enableFileEdit = enableFileEdit
         self._codeExecutionTimeout = codeExecutionTimeout
 
         # Optional observer of the agent loop, so a UI can surface each step
@@ -254,6 +264,16 @@ class AgentClient:
                 "navigating the codebase, file inspection, or verification. Prefer "
                 "POSIX/bash syntax for shell. The stdout/stderr is returned to "
                 "you, then you continue reasoning or finish with 'done'."
+            )
+        if self._enableFileEdit:
+            instructions += (
+                '\nTo edit a file, use:\n'
+                '{"status": "edit_file", "path": "...", "old": "exact snippet to '
+                'replace (must occur once)", "new": "replacement", "reasoning": '
+                '"..."}\n'
+                "The system applies it, returns a unified diff, and records the "
+                "change. Make the smallest correct edit; read the file first if "
+                "unsure of the exact snippet."
             )
         sections.append(instructions)
 
@@ -409,7 +429,58 @@ class AgentClient:
         self._logger.warning("Response is not valid JSON, treating as done")
         return {"status": "done", "answer": response}
 
-    async def _actionLoop(self) -> str:
+    def _emptyResult(self) -> dict:
+        # Result schema. A stable core is always present; capability-specific
+        # fields are added only when that capability is enabled, so a generic
+        # (non-coding) agent never carries coding fields like diffs. Always
+        # JSON-serialisable.
+        result = {
+            "mode": self._mode,
+            "status": "",          # "done" | "max_iterations"
+            "answer": "",
+            "reasoning": "",
+            "steps": [],           # ordered [{iteration, type, ...}]
+            "error": "",
+            "iterations": 0,
+        }
+        if self._enableCodeExecution or self._enableShell:
+            result["commands"] = []  # [{language, code, stdout, stderr, exit_code}]
+        if self._enableFileEdit:
+            result["files_changed"] = []   # [path]
+            result["diffs"] = []           # [{path, diff}]
+        return result
+
+    def _applyEdit(self, path: str, old: str, new: str) -> tuple:
+        # (ok, message, unified_diff). Replaces the unique `old` snippet with
+        # `new` and returns the diff so callers/UIs can inspect the change.
+        if not old:
+            return False, "'old' must not be empty", ""
+        try:
+            with open(path, encoding="utf-8") as f:
+                src = f.read()
+        except Exception as e:
+            return False, f"cannot read {path}: {e}", ""
+        count = src.count(old)
+        if count != 1:
+            return False, f"'old' matched {count} times, need exactly 1", ""
+        updated = src.replace(old, new, 1)
+        diff = "".join(
+            difflib.unified_diff(
+                src.splitlines(keepends=True),
+                updated.splitlines(keepends=True),
+                fromfile=path,
+                tofile=path,
+            )
+        )
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(updated)
+        except Exception as e:
+            return False, f"cannot write {path}: {e}", ""
+        return True, "edited", diff
+
+    async def _actionLoop(self) -> dict:
+        result = self._emptyResult()
         informations = ""
 
         for iteration in range(1, self._maxIterations + 1):
@@ -417,6 +488,7 @@ class AgentClient:
             self._emit(
                 {"type": "iteration", "iteration": iteration, "max": self._maxIterations}
             )
+            result["iterations"] = iteration
 
             response = await self._action(informations)
             self._history.append({"iteration": iteration, "response": response})
@@ -452,6 +524,10 @@ class AgentClient:
                     self._history.append(
                         {"iteration": iteration, "execution_result": denied}
                     )
+                    result["steps"].append(
+                        {"iteration": iteration, "type": "execute_denied",
+                         "language": language}
+                    )
                     informations = (
                         denied
                         + ' The user declined to run that. Try another approach, '
@@ -467,6 +543,14 @@ class AgentClient:
                         "stderr": stderr,
                         "exit_code": rc,
                     }
+                )
+                result["commands"].append(
+                    {"language": language, "code": code, "stdout": stdout,
+                     "stderr": stderr, "exit_code": rc}
+                )
+                result["steps"].append(
+                    {"iteration": iteration, "type": "execute",
+                     "language": language, "exit_code": rc}
                 )
                 result_block = (
                     f"You executed this {language} code:\n{code}\n\n"
@@ -488,10 +572,62 @@ class AgentClient:
                 )
                 continue
 
+            if status == "edit_file" and self._enableFileEdit:
+                path = signal.get("path", "")
+                old = signal.get("old", signal.get("code", ""))
+                new = signal.get("new", "")
+                self._emit(
+                    {"type": "edit_file", "path": path,
+                     "reasoning": signal.get("reasoning", "")}
+                )
+                if not self._approve(
+                    {"type": "edit_file", "path": path, "old": old, "new": new}
+                ):
+                    denied = f"Edit to {path} denied by the user."
+                    self._emit(
+                        {"type": "edit_result", "path": path, "ok": False,
+                         "message": denied, "diff": ""}
+                    )
+                    result["steps"].append(
+                        {"iteration": iteration, "type": "edit_denied", "path": path}
+                    )
+                    informations = denied + ' Try another approach or finish with "done".'
+                    continue
+                ok, message, diff = await asyncio.to_thread(
+                    self._applyEdit, path, old, new
+                )
+                self._emit(
+                    {"type": "edit_result", "path": path, "ok": ok,
+                     "message": message, "diff": diff}
+                )
+                result["steps"].append(
+                    {"iteration": iteration, "type": "edit_file",
+                     "path": path, "ok": ok}
+                )
+                if ok:
+                    if path not in result["files_changed"]:
+                        result["files_changed"].append(path)
+                    result["diffs"].append({"path": path, "diff": diff})
+                block = f"edit_file {path}: {message}"
+                if diff:
+                    block += f"\ndiff:\n{diff}"
+                self._history.append({"iteration": iteration, "edit_result": block})
+                self._inputStrCache += f"\n\n[Iteration {iteration} edit]\n{block}"
+                self._contextWindowsToken = self._countTokens(self._inputStrCache)
+                informations = (
+                    block
+                    + '\n\nVerify the change if needed, or finish with "done".'
+                )
+                continue
+
             if status == "done":
                 self._logger.info("Task completed")
+                result["status"] = "done"
+                result["answer"] = signal.get("answer", "")
+                result["reasoning"] = signal.get("reasoning", "")
+                result["steps"].append({"iteration": iteration, "type": "done"})
                 await self._backupHistory()
-                return signal.get("answer", response)
+                return result
 
             self._logger.info(f"Continuing: {signal.get('reasoning', '')}")
             self._emit(
@@ -501,6 +637,11 @@ class AgentClient:
                     "answer": signal.get("answer", ""),
                     "next_action": signal.get("next_action", ""),
                 }
+            )
+            result["steps"].append(
+                {"iteration": iteration, "type": "continue",
+                 "reasoning": signal.get("reasoning", ""),
+                 "answer": signal.get("answer", "")}
             )
             # Store the parsed answer, not the raw response, so context memory
             # does not fill up with JSON envelopes / reasoning scaffolding.
@@ -516,8 +657,10 @@ class AgentClient:
             )
 
         self._logger.warning("Max iterations reached")
+        result["status"] = "max_iterations"
+        result["answer"] = result["answer"] or "Max iterations reached."
         await self._backupHistory()
-        return "Max iterations reached."
+        return result
 
     async def _compress(self):
         if not self._inputStrCache:
@@ -651,10 +794,11 @@ class AgentClient:
         await asyncio.to_thread(_write)
         self._logger.info(f"History saved to {filepath}")
 
-    async def ask(self, inputStr: str, inputFiles: Optional[list] = None) -> str:
-        # One-shot: reset per-conversation state so the client can be reused
-        # across independent tasks. The router is left open; lifecycle is owned
-        # by the caller via aclose() or the async context manager.
+    async def ask(self, inputStr: str, inputFiles: Optional[list] = None) -> dict:
+        # One-shot. Returns the fixed-schema result dict (see _emptyResult):
+        # answer / reasoning / steps / commands / files_changed / diffs / ...
+        # The router is left open; lifecycle is owned by the caller via aclose()
+        # or the async context manager.
         self._resetState()
         await self._getInputs(inputStr, inputFiles)
         return await self._actionLoop()
@@ -666,14 +810,13 @@ class AgentClient:
         transcript = "\n".join(f"{role}: {text}" for role, text in turns)
         return f"Conversation so far:\n{transcript}\n\nUser: {message}"
 
-    async def chat(self, message: str, inputFiles: Optional[list] = None) -> str:
+    async def chat(self, message: str, inputFiles: Optional[list] = None) -> dict:
         # Multi-turn: remembers prior turns so the caller only feeds the latest
-        # message. Built on ask(), so difficulty routing / skills / files all
-        # apply per turn.
-        answer = await self.ask(self._buildConversationInput(message), inputFiles)
+        # message. Returns the same fixed-schema result dict as ask().
+        result = await self.ask(self._buildConversationInput(message), inputFiles)
         self._conversation.append(("User", message))
-        self._conversation.append(("Assistant", answer))
-        return answer
+        self._conversation.append(("Assistant", result.get("answer", "")))
+        return result
 
     def resetConversation(self) -> None:
         self._conversation = []

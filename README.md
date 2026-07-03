@@ -273,9 +273,13 @@ asyncio.run(main())
 - `complexityScoreThreshold` — score at/above which a task is treated as
   complex (default `3`). Raise it to keep more tasks on the cheaper models.
 - `maxTurnsInContext` — how many past turns `chat()` feeds back as context.
+- `mode` — role/profile label (default `"general"`); tags the result and frames
+  the prompt. Useful as an agent's role in a crew.
 - `enableCodeExecution` — allow the agent to run Python it writes (see below).
   **Off by default.**
 - `enableShell` — allow the agent to run shell commands (grep/find/...). **Off by default.**
+- `enableFileEdit` — allow the agent to apply `edit_file` patches (returns a
+  diff in the result). **Off by default.**
 - `codeExecutionTimeout` — per-run timeout (seconds) for executed code/commands.
 - `onEvent(event)` — observe each step of the loop (planning / reasoning / execute
   / output) for a live UI.
@@ -300,10 +304,35 @@ agent = AgentClient("config/skills.json", "skills", models)
 
 Key methods:
 
-- `await agent.ask(inputStr, inputFiles=None) -> str` — run one independent task.
-- `await agent.chat(message, inputFiles=None) -> str` — like `ask()` but remembers
+- `await agent.ask(inputStr, inputFiles=None) -> dict` — run one independent task.
+- `await agent.chat(message, inputFiles=None) -> dict` — like `ask()` but remembers
   prior turns (multi-turn conversation); `agent.resetConversation()` clears it.
 - `await agent.aclose()` — close the underlying HTTP client (or use `async with`).
+
+Both return a **fixed-schema result dict** (JSON-serialisable). A stable core is
+always present; capability-specific fields appear only when that capability is
+enabled, so a *generic* agent never carries coding fields:
+
+```python
+{
+  "mode": "general",   # the agent's role/profile label (see `mode` arg)
+  "status": "done",    # "done" | "max_iterations"
+  "answer": "...",      # the final text
+  "reasoning": "...",
+  "steps": [ ... ],     # every step the agent took (reasoning / execute / edit / ...)
+  "error": "",
+  "iterations": 2,
+  # only when enableCodeExecution/enableShell:
+  "commands": [ {"language","code","stdout","stderr","exit_code"} ],
+  # only when enableFileEdit:
+  "files_changed": ["path"],
+  "diffs": [ {"path", "diff"} ],   # unified diff of each edit
+}
+```
+
+Use `mode` (default `"general"`; e.g. `"coding"`, `"sql"`, `"research"`) to label
+the agent's role — handy when composing several agents into a crew. It frames the
+result and prompt; the coding fields above are gated by *capabilities*, not by mode.
 
 > **Lifecycle:** `ask()` does **not** close the router, so the same client can be
 > reused across independent tasks. Manage the connection with `async with` or by

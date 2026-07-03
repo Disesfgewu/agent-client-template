@@ -37,24 +37,25 @@ async def main() -> None:
         contextWindowSize=CONTEXT_WINDOW,
         historyDir=HISTORY_DIR,
     ) as agent:
+        # ask() returns a fixed-schema result dict; the text is result["answer"].
         # 1) A simple question.
-        answer = await agent.ask("What is 2 + 2? Reply with just the number.")
-        print("Q1 ->", answer)
+        result = await agent.ask("What is 2 + 2? Reply with just the number.")
+        print("Q1 ->", result["answer"])
 
         # 2) The same client is reusable for an unrelated task; per-conversation
         #    state (history, context memory) is reset on every ask().
-        answer = await agent.ask(
+        result = await agent.ask(
             "Give me three concise best practices for code review."
         )
-        print("Q2 ->", answer)
+        print("Q2 ->", result["answer"])
 
         # 3) Ask a question about one or more local files (txt/md/pdf/xlsx/docx/pptx).
         #    Uncomment and point at a real file to try it.
-        # answer = await agent.ask(
+        # result = await agent.ask(
         #     "Summarize the attached document in three bullet points.",
         #     inputFiles=[os.path.join(ROOT, "README.md")],
         # )
-        # print("Q3 ->", answer)
+        # print("Q3 ->", result["answer"])
 
 
 if __name__ == "__main__":

@@ -140,6 +140,26 @@ def _on_event(event: dict) -> None:
                 padding=(0, 1),
             )
         )
+    elif etype == "edit_file":
+        reasoning = event.get("reasoning")
+        if reasoning:
+            console.print(f"[yellow]> reasoning[/yellow] [dim]{reasoning}[/dim]")
+        console.print(f"[magenta]> edit[/magenta] {event.get('path', '')}")
+    elif etype == "edit_result":
+        ok = event.get("ok")
+        diff = event.get("diff") or ""
+        if diff:
+            console.print(
+                Panel(
+                    Syntax(diff, "diff", theme="monokai", word_wrap=True),
+                    title=f"[bold]diff: {event.get('path', '')}[/bold]",
+                    border_style="green" if ok else "red",
+                    padding=(0, 1),
+                )
+            )
+        else:
+            colour = "green" if ok else "red"
+            console.print(f"[{colour}]{event.get('message', '')}[/{colour}]")
 
 
 _APPROVE_STATE = {"all": False}
@@ -181,8 +201,10 @@ async def main() -> None:
         SKILLS_DIR,
         API_CONFIG,
         historyDir=HISTORY_DIR,
+        mode="coding",
         enableCodeExecution=True,
         enableShell=True,
+        enableFileEdit=True,
         onEvent=_on_event,
         onApprove=_approve,  # ask before running anything (safety gate)
     ) as agent:
@@ -229,19 +251,23 @@ async def main() -> None:
 
             console.print("[dim]working...[/dim]")
             try:
-                answer = await agent.chat(cleaned, inputFiles=files)
+                result = await agent.chat(cleaned, inputFiles=files)
             except Exception as e:
                 console.print(f"[red]error:[/red] {e}\n")
                 continue
 
             console.print(
                 Panel(
-                    Markdown(answer),
+                    Markdown(result.get("answer") or "(no answer)"),
                     title="[bold green]answer[/bold green]",
                     border_style="green",
                     padding=(0, 1),
                 )
             )
+            if result.get("files_changed"):
+                console.print(
+                    f"[dim]files changed: {', '.join(result['files_changed'])}[/dim]"
+                )
             console.print()
 
     console.print("[dim]bye.[/dim]")

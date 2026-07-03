@@ -314,6 +314,51 @@ class TestAgentLogic(unittest.TestCase):
         self.agent._onApprove = bad
         self.assertFalse(self.agent._approve({"type": "execute"}))
 
+    def test_emptyResult_general_has_no_coding_fields(self):
+        r = self.agent._emptyResult()
+        self.assertEqual(r["mode"], "general")
+        self.assertIn("answer", r)
+        self.assertIn("steps", r)
+        self.assertNotIn("diffs", r)
+        self.assertNotIn("commands", r)
+
+    def test_emptyResult_coding_has_capability_fields(self):
+        agent = AgentClient(
+            self.config_path, self.skills_dir, SAMPLE_API_CONFIG,
+            mode="coding", enableCodeExecution=True, enableFileEdit=True,
+        )
+        r = agent._emptyResult()
+        self.assertEqual(r["mode"], "coding")
+        self.assertIn("commands", r)
+        self.assertIn("diffs", r)
+        self.assertIn("files_changed", r)
+
+    def test_applyEdit_produces_diff(self):
+        work = tempfile.mkdtemp()
+        try:
+            p = os.path.join(work, "x.txt")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("hello\nworld\n")
+            ok, message, diff = self.agent._applyEdit(p, "world", "there")
+            self.assertTrue(ok)
+            self.assertIn("+there", diff)
+            with open(p, encoding="utf-8") as f:
+                self.assertIn("there", f.read())
+        finally:
+            shutil.rmtree(work)
+
+    def test_applyEdit_rejects_ambiguous_match(self):
+        work = tempfile.mkdtemp()
+        try:
+            p = os.path.join(work, "x.txt")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("a\na\n")
+            ok, message, diff = self.agent._applyEdit(p, "a", "b")
+            self.assertFalse(ok)
+            self.assertIn("matched 2", message)
+        finally:
+            shutil.rmtree(work)
+
 
 class TestAgentCodeExecution(unittest.IsolatedAsyncioTestCase):
     """Offline: exercises the code executor directly (runs real subprocesses)."""
@@ -438,9 +483,9 @@ class TestAgentReal(unittest.IsolatedAsyncioTestCase):
         ) as agent:
             result = await agent.ask("What is 2+2? Reply with just the number.")
 
-        self.assertIsInstance(result, str)
-        self.assertGreater(len(result), 0)
-        print(f"\n[ask simple] {result[:100]}")
+        self.assertEqual(result["status"], "done")
+        self.assertGreater(len(result["answer"]), 0)
+        print(f"\n[ask simple] {result['answer'][:100]}")
 
     async def test_ask_with_files(self):
         test_dir = tempfile.mkdtemp()
@@ -458,9 +503,9 @@ class TestAgentReal(unittest.IsolatedAsyncioTestCase):
                     inputFiles=[test_file],
                 )
 
-            self.assertIsInstance(result, str)
-            self.assertGreater(len(result), 0)
-            print(f"\n[ask with files] {result[:100]}")
+            self.assertEqual(result["status"], "done")
+            self.assertGreater(len(result["answer"]), 0)
+            print(f"\n[ask with files] {result['answer'][:100]}")
         finally:
             shutil.rmtree(test_dir)
 
