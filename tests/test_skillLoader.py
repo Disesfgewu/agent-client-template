@@ -1,5 +1,6 @@
 import unittest
 import asyncio
+import json
 import sys
 import os
 
@@ -7,6 +8,44 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from disesfgewuAgent.skillLoader import skillLoader
 from tests.live_api import live_api_available, SKIP_REASON
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+class TestDefaultSkills(unittest.TestCase):
+    """Offline: every bundled skill is well-formed and registered."""
+
+    def test_all_skill_files_have_frontmatter(self):
+        loader = object.__new__(skillLoader)
+        skills_dir = os.path.join(ROOT, "skills")
+        md_files = [f for f in os.listdir(skills_dir) if f.endswith(".md")]
+        self.assertGreater(len(md_files), 0)
+        for fname in md_files:
+            with open(os.path.join(skills_dir, fname), encoding="utf-8") as f:
+                frontmatter, body = loader._parse_frontmatter(f.read())
+            self.assertIn("name", frontmatter, f"{fname} missing name")
+            self.assertIn("description", frontmatter, f"{fname} missing description")
+            self.assertGreater(
+                len(frontmatter["description"]), 20, f"{fname} weak description"
+            )
+            self.assertGreater(len(body.strip()), 50, f"{fname} weak body")
+
+    def test_registry_points_to_real_files(self):
+        with open(
+            os.path.join(ROOT, "config", "skills.example.json"), encoding="utf-8"
+        ) as f:
+            registry = json.load(f)
+        for name, info in registry.items():
+            path = os.path.join(ROOT, "skills", info["relativePath"])
+            self.assertTrue(os.path.exists(path), f"{name} -> {info['relativePath']}")
+
+    def test_default_skills_registered(self):
+        with open(
+            os.path.join(ROOT, "config", "skills.example.json"), encoding="utf-8"
+        ) as f:
+            registry = json.load(f)
+        for name in ("sql", "computation", "general-tasks", "code-editing"):
+            self.assertIn(name, registry)
 
 
 class TestSkillLoaderLogic(unittest.TestCase):

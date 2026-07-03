@@ -106,6 +106,34 @@ class TestAgentEndToEnd(unittest.IsolatedAsyncioTestCase):
             self.assertGreater(agent._skillCacheToken, 0)
             print(f"\n[e2e skills] {agent._skillCacheToken} skill tokens injected")
 
+    async def test_sql_skill(self):
+        async with self._agent() as agent:
+            result = await agent.ask(
+                "Write a SQL query returning the top 3 customers by total order "
+                "amount, from customers(id, name) and orders(customer_id, amount). "
+                "Return only the SQL."
+            )
+        answer = result["answer"].lower()
+        self.assertIn("select", answer)
+        self.assertIn("join", answer)
+        self.assertIn("group by", answer)
+        print(f"\n[e2e sql] {result['answer'][:160]}")
+
+    async def test_computation_skill(self):
+        agent = AgentClient(
+            SKILLS_CONFIG,
+            SKILLS_DIR,
+            API_CONFIG,
+            historyDir=os.path.join(ROOT, "history"),
+            enableCodeExecution=True,
+        )
+        async with agent:
+            result = await agent.ask(
+                "Calculate 2 to the power of 20 and report the exact result."
+            )
+        self.assertIn("1048576", result["answer"])
+        print(f"\n[e2e computation] {result['answer'][:80]}")
+
     async def test_writes_runs_and_explains_code(self):
         agent = AgentClient(
             SKILLS_CONFIG,

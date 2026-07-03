@@ -450,6 +450,16 @@ class AgentClient:
             result["diffs"] = []           # [{path, diff}]
         return result
 
+    @staticmethod
+    def _stringify(value) -> str:
+        # Guarantee the result's `answer` is always a string: models sometimes
+        # return a JSON number/object in the "answer" field under JSON mode.
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False)
+        return str(value)
+
     def _applyEdit(self, path: str, old: str, new: str) -> tuple:
         # (ok, message, unified_diff). Replaces the unique `old` snippet with
         # `new` and returns the diff so callers/UIs can inspect the change.
@@ -623,8 +633,8 @@ class AgentClient:
             if status == "done":
                 self._logger.info("Task completed")
                 result["status"] = "done"
-                result["answer"] = signal.get("answer", "")
-                result["reasoning"] = signal.get("reasoning", "")
+                result["answer"] = self._stringify(signal.get("answer", ""))
+                result["reasoning"] = self._stringify(signal.get("reasoning", ""))
                 result["steps"].append({"iteration": iteration, "type": "done"})
                 await self._backupHistory()
                 return result

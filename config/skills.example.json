@@ -13,5 +13,14 @@
     },
     "shell-commands": {
         "relativePath": "shell-commands.md"
+    },
+    "sql": {
+        "relativePath": "sql.md"
+    },
+    "computation": {
+        "relativePath": "computation.md"
+    },
+    "general-tasks": {
+        "relativePath": "general-tasks.md"
     }
 }

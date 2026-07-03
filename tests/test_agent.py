@@ -314,6 +314,12 @@ class TestAgentLogic(unittest.TestCase):
         self.agent._onApprove = bad
         self.assertFalse(self.agent._approve({"type": "execute"}))
 
+    def test_stringify_coerces_non_strings(self):
+        self.assertEqual(self.agent._stringify("hi"), "hi")
+        self.assertEqual(self.agent._stringify(1048576), "1048576")
+        self.assertEqual(self.agent._stringify(3.5), "3.5")
+        self.assertIn("a", self.agent._stringify({"a": 1}))
+
     def test_emptyResult_general_has_no_coding_fields(self):
         r = self.agent._emptyResult()
         self.assertEqual(r["mode"], "general")
