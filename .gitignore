@@ -1,0 +1,20 @@
+
+config/api.local.json
+config/skills.json
+.env
+README.pdf
+history/
+logs/
+.agent/
+
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Generated scaffold output from the full-stack-app-scaffold skill (demo runs)
+hackTEST/

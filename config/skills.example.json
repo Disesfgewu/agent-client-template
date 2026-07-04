@@ -1,0 +1,83 @@
+{
+  "code-review": {
+    "relativePath": "code-review.md"
+  },
+  "debugging": {
+    "relativePath": "debugging.md"
+  },
+  "testing": {
+    "relativePath": "testing.md"
+  },
+  "code-editing": {
+    "relativePath": "code-editing.md"
+  },
+  "shell-commands": {
+    "relativePath": "shell-commands.md"
+  },
+  "sql": {
+    "relativePath": "sql.md"
+  },
+  "computation": {
+    "relativePath": "computation.md"
+  },
+  "general-tasks": {
+    "relativePath": "general-tasks.md"
+  },
+  "web-frontend-design": {
+    "relativePath": "web-frontend-design.md"
+  },
+  "web-frontend-code-review": {
+    "relativePath": "web-frontend-code-review.md"
+  },
+  "flutter-frontend-design": {
+    "relativePath": "flutter-frontend-design.md"
+  },
+  "flutter-frontend-code-review": {
+    "relativePath": "flutter-frontend-code-review.md"
+  },
+  "mobile-code-review": {
+    "relativePath": "mobile-code-review.md"
+  },
+  "backend-design": {
+    "relativePath": "backend-design.md"
+  },
+  "database-review": {
+    "relativePath": "database-review.md"
+  },
+  "web-research": {
+    "relativePath": "web-research.md"
+  },
+  "data-analysis": {
+    "relativePath": "data-analysis.md"
+  },
+  "document-ingestion": {
+    "relativePath": "document-ingestion.md"
+  },
+  "file-io": {
+    "relativePath": "file-io.md"
+  },
+  "skills-optimize": {
+    "relativePath": "skills-optimize.md"
+  },
+  "skill-creator": {
+    "relativePath": "skill-creator.md"
+  },
+  "prompt-injection-guard": {
+    "relativePath": "prompt-injection-guard.md"
+  },
+  "agent-skill-security-audit": {
+    "relativePath": "agent-skill-security-audit.md"
+  },
+  "agent-action-safety-control": {
+    "relativePath": "agent-action-safety-control.md"
+  },
+  "package-framework-analysis": {
+    "relativePath": "package-framework-analysis.md"
+  },
+  "full-stack-app-scaffold": {
+    "relativePath": "full-stack-app-scaffold.md"
+  },
+  "browser-ui-e2e-testing": {
+    "relativePath": "browser-ui-e2e-testing.md"
+  }
+}
