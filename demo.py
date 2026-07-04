@@ -57,6 +57,19 @@ HELP = (
 
 FILE_TOKEN_RE = re.compile(r"""/file\s+("[^"]+"|'[^']+'|\S+)""")
 
+DEMO_SYSTEM_PROMPT = """
+You are running inside demo.py as an autonomous local coding agent. When the user
+asks to inspect files, create folders, scaffold projects, modify files, run tests,
+or verify work, do not stop after a narrative plan. Return exactly one JSON action
+for the agent loop: use status "execute" for shell/Python filesystem work, use
+status "edit_file" for targeted edits, or use status "done" only when no further
+action is needed. Prefer "python" execute actions for cross-platform project
+scaffolding and filesystem writes. On Windows, do not emit POSIX shell commands
+such as mkdir -p, ls -la, or find unless the agent prompt says bash is available;
+use "powershell" syntax if shell is necessary. The UI has an approval gate and
+will ask the user before running your execute/edit action.
+""".strip()
+
 console = Console()
 
 
@@ -67,8 +80,10 @@ def _check_setup() -> bool:
         console.print("[red]Missing config/api.local.json[/red] - copy config/api.example.json.")
         ok = False
     if not os.path.exists(SKILLS_CONFIG):
-        console.print("[red]Missing config/skills.json[/red] - copy config/skills.example.json.")
-        ok = False
+        console.print(
+            "[dim]No config/skills.json found; using bundled default skills "
+            "with .agent/skills.json cache.[/dim]"
+        )
     if not os.getenv("EMBEDDING_API"):
         console.print("[red]Missing EMBEDDING_API[/red] - set it in .env (copy .env.example).")
         ok = False
@@ -196,18 +211,22 @@ async def main() -> None:
 
     pending_files = []
 
-    async with AgentClient(
-        SKILLS_CONFIG,
-        SKILLS_DIR,
-        API_CONFIG,
-        historyDir=HISTORY_DIR,
-        mode="coding",
-        enableCodeExecution=True,
-        enableShell=True,
-        enableFileEdit=True,
-        onEvent=_on_event,
-        onApprove=_approve,  # ask before running anything (safety gate)
-    ) as agent:
+    agent_kwargs = {
+        "apiConfig": API_CONFIG,
+        "historyDir": HISTORY_DIR,
+        "mode": "coding",
+        "enableCodeExecution": True,
+        "enableShell": True,
+        "enableFileEdit": True,
+        "maxIterations": 2000,
+        "onEvent": _on_event,
+        "onApprove": _approve,  # ask before running anything (safety gate)
+    }
+    if os.path.exists(SKILLS_CONFIG) and os.path.isdir(SKILLS_DIR):
+        agent_kwargs["skillConfigPath"] = SKILLS_CONFIG
+        agent_kwargs["skillFolderPath"] = SKILLS_DIR
+
+    async with AgentClient(**agent_kwargs) as agent:
         while True:
             try:
                 user_msg = console.input("[bold cyan]you >[/bold cyan] ").strip()
@@ -251,7 +270,11 @@ async def main() -> None:
 
             console.print("[dim]working...[/dim]")
             try:
-                result = await agent.chat(cleaned, inputFiles=files)
+                result = await agent.chat(
+                    inputFiles=files,
+                    systemPrompt=DEMO_SYSTEM_PROMPT,
+                    userPrompt=cleaned,
+                )
             except Exception as e:
                 console.print(f"[red]error:[/red] {e}\n")
                 continue

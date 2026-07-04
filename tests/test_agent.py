@@ -1,4 +1,6 @@
 import unittest
+from unittest.mock import patch
+import json
 import asyncio
 import tempfile
 import shutil
@@ -8,6 +10,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from disesfgewuAgent.agent import AgentClient
+from disesfgewuAgent.defaultSkills import get_default_skills_dir
 from tests.live_api import live_api_available, SKIP_REASON
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -50,12 +53,42 @@ class TestAgentLogic(unittest.TestCase):
         try:
             os.chdir(temp_dir)
             agent = AgentClient(apiConfig=SAMPLE_API_CONFIG)
-            self.assertTrue(os.path.exists(os.path.join(temp_dir, "skills")))
+            self.assertFalse(os.path.exists(os.path.join(temp_dir, "skills")))
             self.assertTrue(os.path.exists(os.path.join(temp_dir, ".agent", "skills.json")))
             self.assertTrue(agent._skillLoader._skillConfig.endswith(os.path.join(".agent", "skills.json")))
+            self.assertEqual(
+                os.path.normcase(agent._skillLoader._skillPath),
+                os.path.normcase(get_default_skills_dir()),
+            )
         finally:
             os.chdir(cwd)
             shutil.rmtree(temp_dir)
+
+    def test_init_rejects_partial_skill_paths(self):
+        with self.assertRaises(ValueError):
+            AgentClient(skillConfigPath=self.config_path, apiConfig=SAMPLE_API_CONFIG)
+        with self.assertRaises(ValueError):
+            AgentClient(skillFolderPath=self.skills_dir, apiConfig=SAMPLE_API_CONFIG)
+
+    def test_init_max_iterations_default_and_override(self):
+        self.assertEqual(self.agent._maxIterations, 2000)
+        agent = AgentClient(
+            self.config_path,
+            self.skills_dir,
+            SAMPLE_API_CONFIG,
+            maxIterations=75,
+        )
+        self.assertEqual(agent._maxIterations, 75)
+
+    def test_init_rejects_invalid_max_iterations(self):
+        with self.assertRaises(ValueError):
+            AgentClient(
+                self.config_path,
+                self.skills_dir,
+                SAMPLE_API_CONFIG,
+                maxIterations=0,
+            )
+
     def test_countTokens(self):
         text = "Hello, world!"
         tokens = self.agent._countTokens(text)
@@ -220,6 +253,56 @@ class TestAgentLogic(unittest.TestCase):
         self.assertEqual(signal["status"], "done")
         self.assertEqual(signal["answer"], response)
 
+    def test_parseSignal_invalid_continues_when_tools_enabled(self):
+        agent = AgentClient(
+            self.config_path,
+            self.skills_dir,
+            SAMPLE_API_CONFIG,
+            enableCodeExecution=True,
+            enableShell=True,
+            enableFileEdit=True,
+        )
+        response = "Plan: create hackTEST and then write files."
+        signal = agent._parseSignal(response)
+        self.assertEqual(signal["status"], "continue")
+        self.assertTrue(signal["protocol_error"])
+        self.assertIn("valid JSON", signal["next_action"])
+        self.assertEqual(signal["answer"], response)
+
+    def test_buildPrompt_tools_tells_model_to_execute_not_plan_only(self):
+        agent = AgentClient(
+            self.config_path,
+            self.skills_dir,
+            SAMPLE_API_CONFIG,
+            enableCodeExecution=True,
+            enableShell=True,
+            enableFileEdit=True,
+        )
+        agent._inputStr = "Create a folder and scaffold a project"
+        prompt = agent._buildPrompt()
+        self.assertIn("Do not answer with a plan only", prompt)
+        self.assertIn("emit an execute action", prompt)
+        self.assertIn("approval gate", prompt)
+
+    def test_buildPrompt_windows_without_bash_avoids_posix_shell_guidance(self):
+        agent = AgentClient(
+            self.config_path,
+            self.skills_dir,
+            SAMPLE_API_CONFIG,
+            enableCodeExecution=True,
+            enableShell=True,
+            enableFileEdit=True,
+        )
+        agent._inputStr = "Create a folder and scaffold a project"
+        with patch("disesfgewuAgent.agent.shutil.which", return_value=None), \
+             patch("disesfgewuAgent.agent.os.name", "nt"):
+            prompt = agent._buildPrompt()
+        self.assertIn("does not have usable bash", prompt)
+        self.assertIn("Prefer python", prompt)
+        self.assertIn("use PowerShell syntax", prompt)
+        self.assertIn("do not use POSIX-only commands", prompt)
+        self.assertIn("mkdir -p", prompt)
+
     def test_resetState_clears_accumulators(self):
         self.agent._inputStrCache = "leftover"
         self.agent._contextWindowsToken = 123
@@ -279,6 +362,36 @@ class TestAgentLogic(unittest.TestCase):
         self.agent._inputFiles = []
         self.agent._matchedSkillCount = 0
         self.assertFalse(self.agent._assessComplexity())
+
+    def test_assessComplexity_tool_project_task_escalates(self):
+        agent = AgentClient(
+            self.config_path,
+            self.skills_dir,
+            SAMPLE_API_CONFIG,
+            mode="coding",
+            enableCodeExecution=True,
+            enableShell=True,
+            enableFileEdit=True,
+        )
+        agent._inputStr = "Create a folder and scaffold a project with files"
+        agent._inputFiles = []
+        agent._matchedSkillCount = 1
+        self.assertTrue(agent._assessComplexity())
+
+    def test_assessComplexity_plain_question_with_tools_stays_simple(self):
+        agent = AgentClient(
+            self.config_path,
+            self.skills_dir,
+            SAMPLE_API_CONFIG,
+            mode="coding",
+            enableCodeExecution=True,
+            enableShell=True,
+            enableFileEdit=True,
+        )
+        agent._inputStr = "What is 2+2?"
+        agent._inputFiles = []
+        agent._matchedSkillCount = 0
+        self.assertFalse(agent._assessComplexity())
 
     def test_assessComplexity_combination_escalates(self):
         # weak signals on their own stay simple, but together they escalate:
@@ -443,10 +556,132 @@ class TestAgentCodeExecution(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rc, -1)
         self.assertIn("Unsupported", err)
 
+    async def test_action_loop_recovers_from_plain_text_plan_then_executes(self):
+        agent = self._agent()
+        agent._inputStr = "Create a folder and scaffold a project"
+        approvals = []
+        agent._onApprove = lambda action: approvals.append(action) or True
+        responses = iter([
+            "Plan: create a folder, then write the files.",
+            json.dumps({
+                "status": "execute",
+                "language": "python",
+                "code": "print(\"created\")",
+                "reasoning": "Run a real action.",
+            }),
+            json.dumps({
+                "status": "done",
+                "answer": "created",
+                "reasoning": "The command ran.",
+            }),
+        ])
+
+        async def fake_connect(prompt, jsonMode=False):
+            return next(responses)
+
+        agent._connect = fake_connect
+        result = await agent._actionLoop()
+
+        self.assertEqual(result["status"], "done")
+        self.assertEqual(result["answer"], "created")
+        self.assertEqual(len(approvals), 1)
+        self.assertEqual(result["commands"][0]["exit_code"], 0)
+        self.assertIn("created", result["commands"][0]["stdout"])
+        self.assertEqual(result["steps"][0]["type"], "continue")
+        self.assertEqual(result["steps"][1]["type"], "execute")
+
     async def test_shell_disabled_by_default(self):
         out, err, rc = await self._agent()._executeCode("echo hi", language="shell")
         self.assertEqual(rc, -1)
         self.assertIn("disabled", err)
+
+    async def test_action_loop_feeds_execution_output_back_into_prompt(self):
+        agent = self._agent()
+        agent._inputStr = "Compute two intermediate values, then summarize them"
+        prompts = []
+        approvals = []
+        agent._onApprove = lambda action: approvals.append(action) or True
+
+        async def fake_connect(prompt, jsonMode=False):
+            prompts.append(prompt)
+            if len(prompts) == 1:
+                return json.dumps({
+                    "status": "execute",
+                    "language": "python",
+                    "code": "print('alpha=21')",
+                    "reasoning": "Get the first value.",
+                })
+            if len(prompts) == 2:
+                self.assertIn("STDOUT:\nalpha=21", prompt)
+                return json.dumps({
+                    "status": "execute",
+                    "language": "python",
+                    "code": "print('beta=34')",
+                    "reasoning": "Get the second value.",
+                })
+            self.assertIn("STDOUT:\nalpha=21", prompt)
+            self.assertIn("STDOUT:\nbeta=34", prompt)
+            return json.dumps({
+                "status": "done",
+                "answer": "alpha=21; beta=34",
+                "reasoning": "Both execution outputs were available in the loop.",
+            })
+
+        agent._connect = fake_connect
+        result = await agent._actionLoop()
+
+        self.assertEqual(result["status"], "done")
+        self.assertEqual(result["answer"], "alpha=21; beta=34")
+        self.assertEqual(len(approvals), 2)
+        self.assertEqual(len(result["commands"]), 2)
+        self.assertIn("alpha=21", result["commands"][0]["stdout"])
+        self.assertIn("beta=34", result["commands"][1]["stdout"])
+
+    async def test_chat_multiturn_preserves_history_and_system_prompt(self):
+        agent = self._agent()
+        seen_inputs = []
+
+        async def fake_get_inputs(inputStr, inputFiles=None, systemPrompt="", userPrompt=None):
+            seen_inputs.append({
+                "inputStr": inputStr,
+                "inputFiles": inputFiles or [],
+                "systemPrompt": systemPrompt,
+                "userPrompt": userPrompt,
+            })
+            agent._inputStr = inputStr
+            agent._systemPrompt = systemPrompt
+            agent._inputFiles = inputFiles or []
+            agent._taskIsComplex = False
+
+        async def fake_action_loop():
+            return {
+                "mode": agent._mode,
+                "status": "done",
+                "answer": f"reply to: {agent._inputStr}",
+                "reasoning": "fake",
+                "steps": [],
+                "error": "",
+                "iterations": 1,
+                "commands": [],
+            }
+
+        agent._getInputs = fake_get_inputs
+        agent._actionLoop = fake_action_loop
+
+        first = await agent.chat(systemPrompt="trusted policy", userPrompt="first task")
+        second = await agent.chat(systemPrompt="trusted policy", userPrompt="second task")
+
+        self.assertEqual(first["status"], "done")
+        self.assertEqual(second["status"], "done")
+        self.assertEqual(seen_inputs[0]["inputStr"], "first task")
+        self.assertEqual(seen_inputs[0]["systemPrompt"], "trusted policy")
+        self.assertIn("Conversation so far:", seen_inputs[1]["inputStr"])
+        self.assertIn("User: first task", seen_inputs[1]["inputStr"])
+        self.assertIn("Assistant: reply to: first task", seen_inputs[1]["inputStr"])
+        self.assertIn("User: second task", seen_inputs[1]["inputStr"])
+        self.assertEqual(seen_inputs[1]["systemPrompt"], "trusted policy")
+        self.assertEqual(agent._conversation[-2][1], "second task")
+        self.assertTrue(agent._conversation[-1][1].startswith("reply to:"))
 
 
 class TestAgentShellExecution(unittest.IsolatedAsyncioTestCase):
@@ -466,16 +701,55 @@ class TestAgentShellExecution(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rc, 0)
         self.assertIn("hello123", out)
 
+    async def test_explicit_bash_unavailable_does_not_fallback_to_native_shell(self):
+        with patch("disesfgewuAgent.agent.shutil.which", return_value=None):
+            out, err, rc = await self._agent()._executeCode(
+                "echo should-not-run", language="bash"
+            )
+        self.assertEqual(rc, -1)
+        self.assertEqual(out, "")
+        self.assertIn("bash is unavailable", err)
+
+    async def test_windows_shell_without_bash_uses_powershell(self):
+        calls = []
+
+        class FakeProc:
+            stdout = "ok"
+            stderr = ""
+            returncode = 0
+
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            return FakeProc()
+
+        with patch("disesfgewuAgent.agent.shutil.which", return_value=None), \
+             patch("disesfgewuAgent.agent.os.name", "nt"), \
+             patch("disesfgewuAgent.agent.subprocess.run", side_effect=fake_run):
+            out, err, rc = await self._agent()._executeCode(
+                "Write-Output ok", language="shell"
+            )
+        self.assertEqual((out, err, rc), ("ok", "", 0))
+        self.assertEqual(calls[0][0], "powershell")
+        self.assertIn("-Command", calls[0])
+
     async def test_shell_grep_finds_pattern(self):
-        if not shutil.which("bash"):
-            self.skipTest("bash not available for POSIX grep")
+        bash = shutil.which("bash")
+        if not bash or "system32" in bash.lower():
+            self.skipTest("usable POSIX bash not available for grep")
         work = tempfile.mkdtemp()
         try:
             p = os.path.join(work, "f.txt")
             with open(p, "w", encoding="utf-8") as f:
                 f.write("alpha\nNEEDLE here\nbeta\n")
+            bash_path = p.replace(os.sep, "/")
+            if len(bash_path) > 1 and bash_path[1] == ":":
+                drive = bash_path[0].lower()
+                rest = bash_path[2:]
+                bash_exe = (shutil.which("bash") or "").lower()
+                prefix = f"/mnt/{drive}" if "system32" in bash_exe else f"/{drive}"
+                bash_path = f"{prefix}{rest}"
             out, err, rc = await self._agent()._executeCode(
-                f"grep -n NEEDLE '{p}'", language="shell"
+                f"grep -n NEEDLE '{bash_path}'", language="shell"
             )
             self.assertEqual(rc, 0)
             self.assertIn("NEEDLE", out)

@@ -9,7 +9,7 @@ import shutil
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from disesfgewuAgent.skillLoader import skillLoader
-from disesfgewuAgent.defaultSkills import bootstrap_default_skills
+from disesfgewuAgent.defaultSkills import bootstrap_default_skills, get_default_skills_dir
 from tests.live_api import live_api_available, SKIP_REASON
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -68,6 +68,9 @@ class TestDefaultSkills(unittest.TestCase):
             "prompt-injection-guard",
             "agent-skill-security-audit",
             "agent-action-safety-control",
+            "package-framework-analysis",
+            "full-stack-app-scaffold",
+            "browser-ui-e2e-testing",
         ):
             self.assertIn(name, registry)
 
@@ -80,19 +83,42 @@ class TestDefaultSkillBootstrap(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.temp_dir)
 
-    def test_bootstrap_creates_private_registry_and_skills(self):
+    def test_bootstrap_creates_private_registry_for_installed_skills(self):
         config_path, skills_dir = bootstrap_default_skills(base_dir=self.temp_dir)
 
         self.assertTrue(os.path.exists(config_path))
         self.assertTrue(os.path.isdir(skills_dir))
+        self.assertEqual(os.path.normcase(skills_dir), os.path.normcase(get_default_skills_dir()))
         self.assertIn(os.path.join(self.temp_dir, ".agent"), config_path)
+        self.assertFalse(os.path.exists(os.path.join(self.temp_dir, "skills")))
         self.assertTrue(os.path.exists(os.path.join(skills_dir, "skill-creator.md")))
 
         with open(config_path, encoding="utf-8") as f:
             registry = json.load(f)
         self.assertIn("skill-creator", registry)
         self.assertIn("prompt-injection-guard", registry)
+        self.assertEqual(registry["skill-creator"]["relativePath"], "skill-creator.md")
         self.assertNotIn("embedding", registry["skill-creator"])
+
+    def test_bootstrap_preserves_default_embeddings_but_drops_custom_entries(self):
+        config_path, _ = bootstrap_default_skills(base_dir=self.temp_dir)
+        with open(config_path, encoding="utf-8") as f:
+            registry = json.load(f)
+        registry["skill-creator"]["embedding"] = [0.1, 0.2]
+        registry["custom-project-skill"] = {
+            "relativePath": "custom-project-skill.md",
+            "embedding": [0.3, 0.4],
+        }
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(registry, f, indent=2)
+
+        bootstrap_default_skills(base_dir=self.temp_dir)
+
+        with open(config_path, encoding="utf-8") as f:
+            updated = json.load(f)
+        self.assertEqual(updated["skill-creator"]["embedding"], [0.1, 0.2])
+        self.assertEqual(updated["skill-creator"]["relativePath"], "skill-creator.md")
+        self.assertNotIn("custom-project-skill", updated)
 
 class TestSkillLoaderLogic(unittest.TestCase):
     def test_parse_frontmatter_valid(self):

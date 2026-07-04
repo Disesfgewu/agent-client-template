@@ -13,6 +13,7 @@ from typing import Optional
 
 import tiktoken
 
+from disesfgewuAgent.browser import BrowserSession
 from disesfgewuAgent.defaultSkills import bootstrap_default_skills
 from disesfgewuAgent.inputFileManager import inputFileManager
 from disesfgewuAgent.llmRouter import llmRouter
@@ -20,6 +21,28 @@ from disesfgewuAgent.skillLoader import skillLoader
 
 # Reasoning-heavy words (English + Chinese) that hint at a harder task. Matched
 # as case-insensitive substrings against the RAW task only.
+TOOL_ACTION_KEYWORDS = (
+    "create",
+    "write",
+    "edit",
+    "modify",
+    "scaffold",
+    "folder",
+    "directory",
+    "file",
+    "project",
+    "implement",
+    "build",
+    "建立",
+    "新增",
+    "寫入",
+    "修改",
+    "資料夾",
+    "檔案",
+    "專案",
+)
+
+
 COMPLEX_KEYWORDS = (
     "analyze",
     "analyse",
@@ -78,7 +101,11 @@ class AgentClient:
         enableCodeExecution: bool = False,
         enableShell: bool = False,
         enableFileEdit: bool = False,
+        enableBrowser: bool = False,
+        browserHeadless: bool = False,
+        browserTimeout: int = 30,
         codeExecutionTimeout: int = 30,
+        maxIterations: int = 2000,
         onEvent=None,
         onApprove=None,
     ):
@@ -90,7 +117,14 @@ class AgentClient:
         # the config order.
         if apiConfig is None:
             raise ValueError("apiConfig is required")
-        if skillConfigPath is None or skillFolderPath is None:
+        if (skillConfigPath is None) != (skillFolderPath is None):
+            raise ValueError(
+                "skillConfigPath and skillFolderPath must be provided together, "
+                "or both omitted to use bundled default skills"
+            )
+        if maxIterations < 1:
+            raise ValueError("maxIterations must be >= 1")
+        if skillConfigPath is None and skillFolderPath is None:
             skillConfigPath, skillFolderPath = bootstrap_default_skills()
 
         self._router = llmRouter(apiConfig, routingStrategy)
@@ -104,7 +138,7 @@ class AgentClient:
         self._maxInputToken = self._router.getMaxInputToken()
         self._outputReserveToken = 2048
 
-        self._maxIterations = 10
+        self._maxIterations = maxIterations
         self._encoder = tiktoken.get_encoding("cl100k_base")
         self._logger = logging.getLogger(__name__)
 
@@ -130,6 +164,14 @@ class AgentClient:
         self._enableShell = enableShell
         self._enableFileEdit = enableFileEdit
         self._codeExecutionTimeout = codeExecutionTimeout
+
+        # Optional real-browser automation (Playwright). Off by default; the
+        # browser binaries are an opt-in extra so importing the package never
+        # requires them. The session is created lazily on first browser action.
+        self._enableBrowser = enableBrowser
+        self._browserHeadless = browserHeadless
+        self._browserTimeout = browserTimeout
+        self._browserSession = None
 
         # Optional observer of the agent loop, so a UI can surface each step
         # (planning, running code, observing output). Makes the agentic loop
@@ -229,6 +271,10 @@ class AgentClient:
             score += 1
         if self._matchedSkillCount >= 3:
             score += 1
+        if (
+            self._enableCodeExecution or self._enableShell or self._enableFileEdit
+        ) and any(kw in lowered for kw in TOOL_ACTION_KEYWORDS):
+            score += 3
 
         return score >= self._complexityScoreThreshold
 
@@ -245,7 +291,7 @@ class AgentClient:
         sections = []
 
         instructions = (
-            "You are an autonomous task-solving agent (not a chat bot). Think "
+            "You are an autonomous task-solving agent developed by DisesFgewu (not a chat bot). Think "
             "step by step and work toward completing the task.\n"
             "Respond with valid JSON only, one action per response:\n"
             '{"status": "continue", "answer": "progress so far", '
@@ -265,29 +311,64 @@ class AgentClient:
             langs = []
             if self._enableCodeExecution:
                 langs.append('"python" (run a script)')
+            shell_guidance = ""
             if self._enableShell:
-                langs.append(
-                    '"shell" (run a shell command: grep, find, ls, cat, sed, ...)'
-                )
+                bash = shutil.which("bash")
+                if bash and "system32" in bash.lower():
+                    bash = None
+                if bash:
+                    langs.append(
+                        '"shell" or "bash" (run POSIX shell commands: grep, find, ls, cat, sed, ...)'
+                    )
+                    shell_guidance = (
+                        "POSIX/bash syntax is available for shell commands."
+                    )
+                elif os.name == "nt":
+                    langs.append(
+                        '"shell" or "powershell" (run Windows PowerShell commands)'
+                    )
+                    shell_guidance = (
+                        "This Windows environment does not have usable bash. Prefer python for "
+                        "portable filesystem scaffolding. If using shell, use PowerShell syntax; "
+                        "do not use POSIX-only commands such as mkdir -p, ls -la, or find."
+                    )
+                else:
+                    langs.append('"shell" (run native shell commands)')
+                    shell_guidance = "Use syntax supported by the native shell."
             instructions += (
-                '\nTo actually run code or commands, use:\n'
+                "\nTo actually run code or commands, use:\n"
                 '{"status": "execute", "language": "<lang>", "code": "...", '
                 '"reasoning": "..."}\n'
                 "Available languages: " + "; ".join(langs) + ". "
                 "Use this whenever the task needs real computation, searching or "
-                "navigating the codebase, file inspection, or verification. Prefer "
-                "POSIX/bash syntax for shell. The stdout/stderr is returned to "
-                "you, then you continue reasoning or finish with 'done'."
+                "navigating the codebase, file inspection, filesystem changes, or "
+                "verification. " + shell_guidance + " The stdout/stderr "
+                "is returned to you, then you continue reasoning or finish with "
+                "'done'. Do not answer with a plan only when a tool action is needed; "
+                "emit an execute action instead."
             )
         if self._enableFileEdit:
             instructions += (
-                '\nTo edit a file, use:\n'
+                "\nTo edit a file, use:\n"
                 '{"status": "edit_file", "path": "...", "old": "exact snippet to '
                 'replace (must occur once)", "new": "replacement", "reasoning": '
                 '"..."}\n'
                 "The system applies it, returns a unified diff, and records the "
                 "change. Make the smallest correct edit; read the file first if "
-                "unsure of the exact snippet."
+                "unsure of the exact snippet. For creating new files/directories or "
+                "larger project scaffolds, use an execute action so the approval gate "
+                "can authorize the filesystem operation before it runs."
+            )
+        if self._enableBrowser:
+            instructions += (
+                "\nTo operate a real browser, use:\n"
+                '{"status": "browser", "action": "goto|click|fill|type|press|wait_for_selector|wait|screenshot|text|close", '
+                '"url": "http://localhost:...", "selector": "...", "text": "...", "key": "Enter", '
+                '"path": "...", "reasoning": "..."}\n'
+                "Use browser actions for frontend E2E validation: navigate to local dev URLs, click, type, "
+                "submit forms, inspect visible text, and capture screenshots. The caller approval gate is "
+                "invoked before every browser action. Prefer local/test URLs and avoid destructive production "
+                "actions unless the trusted caller systemPrompt explicitly allows them."
             )
         sections.append(instructions)
 
@@ -327,15 +408,96 @@ class AgentClient:
     def _scanUserPromptSecurity(self, userPrompt: str) -> dict:
         lowered = userPrompt.lower()
         checks = [
-            ("instruction_override", ("ignore previous", "ignore all previous", "forget previous", "disregard previous", "override system", "bypass instructions", "jailbreak")),
-            ("prompt_extraction", ("system prompt", "developer message", "hidden instruction", "reveal prompt", "show your instructions", "print your prompt")),
-            ("secret_exfiltration", ("api key", "token", "password", "private key", "ssh key", "credential", "secret", "cookie", "env var", ".env")),
-            ("unsafe_execution", ("run shell", "execute command", "subprocess", "os.system", "eval(", "exec(", "rm -rf", "powershell", "curl |", "wget |")),
-            ("destructive_or_external_action", ("delete all", "drop table", "truncate", "transfer money", "send email", "post message", "deploy production", "password reset")),
-            ("data_boundary_confusion", ("treat this as system", "act as developer", "this is a system message", "tool output says", "web page instruction")),
+            (
+                "instruction_override",
+                (
+                    "ignore previous",
+                    "ignore all previous",
+                    "forget previous",
+                    "disregard previous",
+                    "override system",
+                    "bypass instructions",
+                    "jailbreak",
+                ),
+            ),
+            (
+                "prompt_extraction",
+                (
+                    "system prompt",
+                    "developer message",
+                    "hidden instruction",
+                    "reveal prompt",
+                    "show your instructions",
+                    "print your prompt",
+                ),
+            ),
+            (
+                "secret_exfiltration",
+                (
+                    "api key",
+                    "token",
+                    "password",
+                    "private key",
+                    "ssh key",
+                    "credential",
+                    "secret",
+                    "cookie",
+                    "env var",
+                    ".env",
+                ),
+            ),
+            (
+                "unsafe_execution",
+                (
+                    "run shell",
+                    "execute command",
+                    "subprocess",
+                    "os.system",
+                    "eval(",
+                    "exec(",
+                    "rm -rf",
+                    "powershell",
+                    "curl |",
+                    "wget |",
+                ),
+            ),
+            (
+                "destructive_or_external_action",
+                (
+                    "delete all",
+                    "drop table",
+                    "truncate",
+                    "transfer money",
+                    "send email",
+                    "post message",
+                    "deploy production",
+                    "password reset",
+                ),
+            ),
+            (
+                "data_boundary_confusion",
+                (
+                    "treat this as system",
+                    "act as developer",
+                    "this is a system message",
+                    "tool output says",
+                    "web page instruction",
+                ),
+            ),
         ]
-        flags = [name for name, patterns in checks if any(pattern in lowered for pattern in patterns)]
-        if any(flag in flags for flag in ("secret_exfiltration", "unsafe_execution", "destructive_or_external_action")):
+        flags = [
+            name
+            for name, patterns in checks
+            if any(pattern in lowered for pattern in patterns)
+        ]
+        if any(
+            flag in flags
+            for flag in (
+                "secret_exfiltration",
+                "unsafe_execution",
+                "destructive_or_external_action",
+            )
+        ):
             risk_level = "L3"
         elif flags:
             risk_level = "L2"
@@ -496,6 +658,21 @@ class AgentClient:
             if isinstance(signal, dict):
                 return signal
 
+        if self._enableCodeExecution or self._enableShell or self._enableFileEdit:
+            self._logger.warning(
+                "Response is not valid JSON; asking model to return a tool action"
+            )
+            return {
+                "status": "continue",
+                "answer": response,
+                "reasoning": "The previous response was not valid JSON and cannot drive the agent loop.",
+                "next_action": (
+                    "Respond with exactly one valid JSON object. Use status execute "
+                    "or edit_file if work is needed, otherwise status done."
+                ),
+                "protocol_error": True,
+            }
+
         self._logger.warning("Response is not valid JSON, treating as done")
         return {"status": "done", "answer": response}
 
@@ -506,18 +683,20 @@ class AgentClient:
         # JSON-serialisable.
         result = {
             "mode": self._mode,
-            "status": "",          # "done" | "max_iterations"
+            "status": "",  # "done" | "max_iterations"
             "answer": "",
             "reasoning": "",
-            "steps": [],           # ordered [{iteration, type, ...}]
+            "steps": [],  # ordered [{iteration, type, ...}]
             "error": "",
             "iterations": 0,
         }
         if self._enableCodeExecution or self._enableShell:
             result["commands"] = []  # [{language, code, stdout, stderr, exit_code}]
         if self._enableFileEdit:
-            result["files_changed"] = []   # [path]
-            result["diffs"] = []           # [{path, diff}]
+            result["files_changed"] = []  # [path]
+            result["diffs"] = []  # [{path, diff}]
+        if self._enableBrowser:
+            result["browser_actions"] = []  # [{action, ok, result}]
         return result
 
     @staticmethod
@@ -559,6 +738,23 @@ class AgentClient:
             return False, f"cannot write {path}: {e}", ""
         return True, "edited", diff
 
+    async def _runBrowserAction(self, action: str, params: dict) -> dict:
+        if not self._enableBrowser:
+            return {
+                "ok": False,
+                "action": action,
+                "message": "Browser automation is disabled",
+            }
+        if self._browserSession is None:
+            self._browserSession = BrowserSession(
+                headless=self._browserHeadless,
+                timeout=self._browserTimeout,
+            )
+        try:
+            return await self._browserSession.run(action, **params)
+        except Exception as e:
+            return {"ok": False, "action": action, "message": str(e)}
+
     async def _actionLoop(self) -> dict:
         result = self._emptyResult()
         informations = ""
@@ -566,7 +762,11 @@ class AgentClient:
         for iteration in range(1, self._maxIterations + 1):
             self._logger.info(f"Iteration {iteration}/{self._maxIterations}")
             self._emit(
-                {"type": "iteration", "iteration": iteration, "max": self._maxIterations}
+                {
+                    "type": "iteration",
+                    "iteration": iteration,
+                    "max": self._maxIterations,
+                }
             )
             result["iterations"] = iteration
 
@@ -576,6 +776,82 @@ class AgentClient:
             signal = self._parseSignal(response)
             status = signal.get("status", "done")
 
+            if status == "browser" and self._enableBrowser:
+                action = signal.get("action", signal.get("browser_action", ""))
+                params = {
+                    key: value
+                    for key, value in signal.items()
+                    if key not in ("status", "reasoning") and value is not None
+                }
+                self._logger.info(f"Running browser action {action}")
+                self._emit(
+                    {
+                        "type": "browser",
+                        "action": action,
+                        "params": params,
+                        "reasoning": signal.get("reasoning", ""),
+                    }
+                )
+                if not self._approve({"type": "browser", "action": action, **params}):
+                    denied = f"Browser action {action} denied by the user."
+                    self._emit(
+                        {
+                            "type": "browser_result",
+                            "action": action,
+                            "ok": False,
+                            "result": {"ok": False, "message": denied},
+                        }
+                    )
+                    result["steps"].append(
+                        {
+                            "iteration": iteration,
+                            "type": "browser_denied",
+                            "action": action,
+                        }
+                    )
+                    informations = (
+                        denied + ' Try another approach or finish with "done".'
+                    )
+                    continue
+                browser_result = await self._runBrowserAction(action, params)
+                self._emit(
+                    {
+                        "type": "browser_result",
+                        "action": action,
+                        "ok": browser_result.get("ok", False),
+                        "result": browser_result,
+                    }
+                )
+                result["browser_actions"].append(
+                    {
+                        "action": action,
+                        "ok": browser_result.get("ok", False),
+                        "result": browser_result,
+                    }
+                )
+                result["steps"].append(
+                    {
+                        "iteration": iteration,
+                        "type": "browser",
+                        "action": action,
+                        "ok": browser_result.get("ok", False),
+                    }
+                )
+                result_block = json.dumps(browser_result, ensure_ascii=False, indent=2)
+                self._history.append(
+                    {"iteration": iteration, "browser_result": result_block}
+                )
+                self._inputStrCache += (
+                    f"\n\n[Iteration {iteration} browser]\n{result_block}"
+                )
+                self._contextWindowsToken = self._countTokens(self._inputStrCache)
+                informations = (
+                    "Browser action result:\n"
+                    + result_block
+                    + "\n\nContinue with another browser/execute/edit_file action if needed, "
+                    'or finish with "done" when validation is complete.'
+                )
+                continue
             if status == "execute" and (self._enableCodeExecution or self._enableShell):
                 code = signal.get("code", "")
                 language = signal.get("language", "python")
@@ -605,12 +881,15 @@ class AgentClient:
                         {"iteration": iteration, "execution_result": denied}
                     )
                     result["steps"].append(
-                        {"iteration": iteration, "type": "execute_denied",
-                         "language": language}
+                        {
+                            "iteration": iteration,
+                            "type": "execute_denied",
+                            "language": language,
+                        }
                     )
                     informations = (
                         denied
-                        + ' The user declined to run that. Try another approach, '
+                        + " The user declined to run that. Try another approach, "
                         'ask for what you need, or finish with "done".'
                     )
                     continue
@@ -625,12 +904,21 @@ class AgentClient:
                     }
                 )
                 result["commands"].append(
-                    {"language": language, "code": code, "stdout": stdout,
-                     "stderr": stderr, "exit_code": rc}
+                    {
+                        "language": language,
+                        "code": code,
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "exit_code": rc,
+                    }
                 )
                 result["steps"].append(
-                    {"iteration": iteration, "type": "execute",
-                     "language": language, "exit_code": rc}
+                    {
+                        "iteration": iteration,
+                        "type": "execute",
+                        "language": language,
+                        "exit_code": rc,
+                    }
                 )
                 result_block = (
                     f"You executed this {language} code:\n{code}\n\n"
@@ -657,32 +945,51 @@ class AgentClient:
                 old = signal.get("old", signal.get("code", ""))
                 new = signal.get("new", "")
                 self._emit(
-                    {"type": "edit_file", "path": path,
-                     "reasoning": signal.get("reasoning", "")}
+                    {
+                        "type": "edit_file",
+                        "path": path,
+                        "reasoning": signal.get("reasoning", ""),
+                    }
                 )
                 if not self._approve(
                     {"type": "edit_file", "path": path, "old": old, "new": new}
                 ):
                     denied = f"Edit to {path} denied by the user."
                     self._emit(
-                        {"type": "edit_result", "path": path, "ok": False,
-                         "message": denied, "diff": ""}
+                        {
+                            "type": "edit_result",
+                            "path": path,
+                            "ok": False,
+                            "message": denied,
+                            "diff": "",
+                        }
                     )
                     result["steps"].append(
                         {"iteration": iteration, "type": "edit_denied", "path": path}
                     )
-                    informations = denied + ' Try another approach or finish with "done".'
+                    informations = (
+                        denied + ' Try another approach or finish with "done".'
+                    )
                     continue
                 ok, message, diff = await asyncio.to_thread(
                     self._applyEdit, path, old, new
                 )
                 self._emit(
-                    {"type": "edit_result", "path": path, "ok": ok,
-                     "message": message, "diff": diff}
+                    {
+                        "type": "edit_result",
+                        "path": path,
+                        "ok": ok,
+                        "message": message,
+                        "diff": diff,
+                    }
                 )
                 result["steps"].append(
-                    {"iteration": iteration, "type": "edit_file",
-                     "path": path, "ok": ok}
+                    {
+                        "iteration": iteration,
+                        "type": "edit_file",
+                        "path": path,
+                        "ok": ok,
+                    }
                 )
                 if ok:
                     if path not in result["files_changed"]:
@@ -695,8 +1002,7 @@ class AgentClient:
                 self._inputStrCache += f"\n\n[Iteration {iteration} edit]\n{block}"
                 self._contextWindowsToken = self._countTokens(self._inputStrCache)
                 informations = (
-                    block
-                    + '\n\nVerify the change if needed, or finish with "done".'
+                    block + '\n\nVerify the change if needed, or finish with "done".'
                 )
                 continue
 
@@ -719,9 +1025,12 @@ class AgentClient:
                 }
             )
             result["steps"].append(
-                {"iteration": iteration, "type": "continue",
-                 "reasoning": signal.get("reasoning", ""),
-                 "answer": signal.get("answer", "")}
+                {
+                    "iteration": iteration,
+                    "type": "continue",
+                    "reasoning": signal.get("reasoning", ""),
+                    "answer": signal.get("answer", ""),
+                }
             )
             # Store the parsed answer, not the raw response, so context memory
             # does not fill up with JSON envelopes / reasoning scaffolding.
@@ -800,6 +1109,8 @@ class AgentClient:
                 [sys.executable, path],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=self._codeExecutionTimeout,
             )
             return proc.stdout, proc.stderr, proc.returncode
@@ -817,18 +1128,35 @@ class AgentClient:
         # the native shell.
         try:
             bash = shutil.which("bash")
+            # C:\Windows\System32\bash.exe is the WSL launcher. It can exist even
+            # when no WSL distro is usable, so do not prefer it for demo shell
+            # execution. Git Bash or another real bash remains supported.
+            if bash and "system32" in bash.lower():
+                bash = None
+            if lang in ("bash", "sh") and not bash:
+                return (
+                    "",
+                    "bash is unavailable; install Git Bash or use language='shell'/'powershell'",
+                    -1,
+                )
             if lang in ("shell", "bash", "sh") and bash:
                 proc = subprocess.run(
                     [bash, "-c", command],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=self._codeExecutionTimeout,
                 )
-            elif lang in ("powershell", "pwsh"):
+            elif lang in ("powershell", "pwsh") or (
+                lang == "shell" and os.name == "nt"
+            ):
                 proc = subprocess.run(
                     ["powershell", "-NoProfile", "-Command", command],
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=self._codeExecutionTimeout,
                 )
             else:
@@ -837,6 +1165,8 @@ class AgentClient:
                     shell=True,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=self._codeExecutionTimeout,
                 )
             return proc.stdout, proc.stderr, proc.returncode
@@ -893,7 +1223,7 @@ class AgentClient:
     def _buildConversationInput(self, message: str) -> str:
         if not self._conversation:
             return message
-        turns = self._conversation[-self._maxTurnsInContext * 2:]
+        turns = self._conversation[-self._maxTurnsInContext * 2 :]
         transcript = "\n".join(f"{role}: {text}" for role, text in turns)
         return f"Conversation so far:\n{transcript}\n\nUser: {message}"
 
@@ -922,6 +1252,12 @@ class AgentClient:
         self._conversation = []
 
     async def aclose(self) -> None:
+        if self._browserSession is not None:
+            try:
+                await self._browserSession.close()
+            except Exception:
+                self._logger.debug("browser session close raised", exc_info=True)
+            self._browserSession = None
         await self._router.close()
 
     async def __aenter__(self):

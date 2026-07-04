@@ -70,5 +70,14 @@
   },
   "agent-action-safety-control": {
     "relativePath": "agent-action-safety-control.md"
+  },
+  "package-framework-analysis": {
+    "relativePath": "package-framework-analysis.md"
+  },
+  "full-stack-app-scaffold": {
+    "relativePath": "full-stack-app-scaffold.md"
+  },
+  "browser-ui-e2e-testing": {
+    "relativePath": "browser-ui-e2e-testing.md"
   }
 }

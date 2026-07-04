@@ -31,13 +31,15 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/disesfgewu/agent-client-template"
-Repository = "https://github.com/disesfgewu/agent-client-template"
+Homepage = "https://github.com/Disesfgewu/agent-client-template"
+Repository = "https://github.com/Disesfgewu/agent-client-template"
+Issues = "https://github.com/Disesfgewu/agent-client-template/issues"
 
 [project.optional-dependencies]
 dev = ["build", "twine"]
 demo = ["rich>=13.0.0"]
 web = ["ddgs>=9.0.0"]
+browser = ["playwright>=1.40.0"]
 
 [tool.setuptools.packages.find]
 include = ["disesfgewuAgent*"]

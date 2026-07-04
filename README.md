@@ -102,15 +102,16 @@ pip install -r requirements.txt
 Requires Python 3.9+. Configuration (models, keys, skills) is **never** bundled
 into the package — you inject it at runtime (see below), so the same install
 works from a checkout or from site-packages. The **default skills** *are* bundled
-in the package and bootstrap into `./skills/` (with a private `./.agent/skills.json`
-registry) the first time you construct an agent without skill paths.
+in the package under `disesfgewuAgent/default_skills/`. When you construct an
+agent without skill paths, it uses that installed skills directory and creates only
+a private local registry/cache at `./.agent/skills.json`.
 
 ---
 
 ## Configuration
 
 There are three things to configure: **models**, an **embedding provider**, and
-optionally your **skills**. Bundled default skills can bootstrap themselves when no skill paths are supplied. The `config/*.local`/`*.json` and `.env` files are gitignored,
+optionally your project-local **skills**. Bundled default skills are available without any project-local `skills/` directory. The `config/*.local`/`*.json`, `.agent/`, and `.env` files are gitignored,
 so your keys never get committed.
 
 ```bash
@@ -215,10 +216,10 @@ To **add a new skill**:
 The `skills.json` index is the source of truth for which skills exist; the
 `embedding` field is filled in automatically.
 
-**Bundled default skills.** The package also includes `disesfgewuAgent/default_skills/*.md`. If `AgentClient` is created without `skillConfigPath` or `skillFolderPath`, it calls `bootstrap_default_skills()`, copies the bundled skills into `./skills/`, and creates a private local registry at `./.agent/skills.json`. That private registry is where embeddings are cached, so runtime config does not need to be committed or exposed. `config/skills.example.json` remains a shareable template; `config/skills.json` and `.agent/` are local-only.
+**Bundled default skills.** The package includes `disesfgewuAgent/default_skills/*.md`. If `AgentClient` is created without `skillConfigPath` and `skillFolderPath`, it calls `bootstrap_default_skills()`, keeps the bundled skill Markdown files in the installed package location, and creates a private local registry at `./.agent/skills.json`. That registry is where embeddings are cached, so runtime config does not need to be committed or exposed. `config/skills.example.json` remains a shareable template; `config/skills.json` and `.agent/` are local-only. To use your own project skills, pass both `skillConfigPath` and `skillFolderPath`.
 
 ```python
-agent = AgentClient(apiConfig=models)  # auto-creates ./skills and ./.agent/skills.json
+agent = AgentClient(apiConfig=models)  # uses package default skills; creates ./.agent/skills.json
 ```
 
 **Code-editing skill.** The bundled `code-editing` skill turns the agent into a
@@ -410,7 +411,7 @@ A single `ask()` runs this pipeline:
 3. **Gather inputs** — load the skill index, extract any attached files, and run
    vector search to pick the top matching skills (cosine similarity, default
    `min_score=0.3`, `top_k=3`).
-4. **Iteration loop** (up to 10 by default):
+4. **Iteration loop** (up to 2000 by default, configurable with `maxIterations`):
    - Build the prompt from `[SKILLS] / [CONTEXT MEMORY] / [INFORMATIONS FROM LAST] /
      [FILES] / [TASK]`.
    - If context memory exceeds `contextWindowSize`, **compress** it (summarize,
