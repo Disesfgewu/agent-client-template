@@ -6,7 +6,7 @@ from disesfgewuAgent.llmRouter import llmRouter
 from disesfgewuAgent.skillLoader import skillLoader
 from disesfgewuAgent.inputFileManager import inputFileManager
 
-__version__ = "1.4.0"
+__version__ = "1.4.1"
 
 __all__ = [
     "AgentClient",

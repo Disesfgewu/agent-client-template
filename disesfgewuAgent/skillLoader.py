@@ -135,8 +135,16 @@ class skillLoader:
         return self._skills[idx]
 
     def search(self, query: str, top_k: int = 3, min_score: float = 0.3) -> list:
-        if not self._index or not self._skills:
+        if not self._loaded:
             raise ValueError("Skills not loaded. Call load() first.")
+
+        # An agent may legitimately run with no skills at all (e.g. an empty
+        # skills.json). Skill search is optional, so a loaded-but-empty loader
+        # returns no matches instead of forcing an embedding call. This also
+        # means such an agent never needs EMBEDDING_API configured — nothing to
+        # embed when there is nothing to search.
+        if not self._index or not self._skills:
+            return []
 
         # Skill search is a best-effort enhancement. A flaky, oversized, or
         # unreachable embedding endpoint must never crash the agent request that

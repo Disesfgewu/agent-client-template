@@ -187,6 +187,32 @@ Body after empty frontmatter."""
         self.assertEqual(frontmatter, {})
         self.assertIn("Body after empty frontmatter.", body)
 
+    def test_search_returns_empty_when_no_skills(self):
+        # An agent loaded with no skills (e.g. empty skills.json) must not crash
+        # and must not require an embedding call — skill search simply yields no
+        # matches. Guard against regressions to the old "raise ValueError" path.
+        loader = object.__new__(skillLoader)
+        loader._loaded = True
+        loader._index = None
+        loader._skills = []
+        loader._embed = lambda text: self.fail("must not embed when no skills")
+
+        self.assertEqual(loader.search("any query"), [])
+
+    def test_search_degrades_when_embedding_fails(self):
+        # A flaky/oversized/unreachable embedding endpoint must degrade to "no
+        # skills" rather than propagating out and crashing the caller.
+        loader = object.__new__(skillLoader)
+        loader._loaded = True
+        loader._skills = [{"skill_name": "x"}]
+        loader._index = object()  # non-None; never reached because _embed raises
+
+        def boom(text):
+            raise RuntimeError("HTTP 500: input too long")
+
+        loader._embed = boom
+        self.assertEqual(loader.search("a very long query " * 1000), [])
+
 
 @unittest.skipUnless(live_api_available(), SKIP_REASON)
 class TestSkillLoaderReal(unittest.TestCase):
@@ -263,6 +289,7 @@ class TestSkillLoaderReal(unittest.TestCase):
 
     def test_search_raises_when_not_loaded(self):
         loader = object.__new__(skillLoader)
+        loader._loaded = False
         loader._index = None
         loader._skills = []
 

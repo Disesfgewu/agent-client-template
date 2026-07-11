@@ -30,6 +30,7 @@ Give it a task (optionally with files), and it will:
 - [Usage](#usage)
 - [How it works](#how-it-works)
 - [Testing](#testing)
+- [Changelog](#changelog)
 - [Notes & limitations](#notes--limitations)
 - [References](#references)
 
@@ -81,7 +82,16 @@ agent-client-template/
 
 ## Installation
 
-As an installable package (exposes the `disesfgewuAgent` import):
+Straight from GitHub (no PyPI account needed — this is the recommended way to
+install it as a dependency):
+
+```bash
+pip install git+https://github.com/Disesfgewu/agent-client-template.git
+# a specific release:
+pip install git+https://github.com/Disesfgewu/agent-client-template.git@v1.4.1
+```
+
+Or, from a local checkout (exposes the `disesfgewuAgent` import):
 
 ```bash
 pip install .
@@ -182,6 +192,13 @@ EMBEDDING_MODEL=nvidia/nv-embed-v1
 
 Any OpenAI-compatible embeddings endpoint works — just point `EMBEDDING_URL`,
 `EMBEDDING_API`, and `EMBEDDING_MODEL` at it.
+
+> **Embedding is only needed when the agent has skills.** An agent configured
+> with an empty registry (no skills) never embeds anything: `load()` and
+> `search()` short-circuit to "no matches", so `EMBEDDING_API` can be left
+> unset. Skill search is best-effort throughout — if the embedding endpoint is
+> unreachable, oversized, or errors out, the agent degrades to running on the
+> base prompt instead of crashing (see the [Changelog](#changelog)).
 
 ### 3. Skills
 
@@ -459,6 +476,40 @@ are guarded by `@unittest.skipUnless(live_api_available(), ...)`, so a fresh
 clone without configuration still gets a green run. They are **not mocked** — they
 exercise the full pipeline against your configured endpoints and consume real API
 quota, so they require the endpoints to be reachable and within rate limits.
+
+---
+
+## Changelog
+
+Versioning follows [SemVer](https://semver.org/). Install a specific release with
+`pip install git+https://github.com/Disesfgewu/agent-client-template.git@vX.Y.Z`.
+
+### v1.4.1
+
+- **Skill search is now fully optional.** An agent with no skills (an empty
+  `skills.json`) no longer crashes and no longer requires `EMBEDDING_API` to be
+  set. Previously `search()` raised `ValueError("Skills not loaded")` for a
+  loaded-but-empty registry, which took down the whole `ask()` call. It now
+  distinguishes "never loaded" (still a programming error → raises) from
+  "loaded, but no skills to search" (returns no matches). No embedding call is
+  made when there is nothing to embed.
+- Added offline regression tests for the no-skills and embedding-failure paths.
+
+### v1.4.0
+
+- **Fixed skill search crashing the whole agent request on long queries.**
+  Skill search embeds the full query via the embedding endpoint; two problems
+  made it crash entire `ask()` calls:
+  - `_embed()` sent `truncate: "NONE"`, so any query longer than the embedding
+    model's input limit (nv-embed caps at a few hundred tokens) was rejected
+    with HTTP 500. A long prompt — e.g. one carrying thousands of characters of
+    source/paper text — took down the whole request. Now lets the server
+    truncate instead (`truncate: "END"`).
+  - `search()` called `_embed()` unguarded, so any embedding failure (size, 5xx,
+    network) propagated out and crashed the caller. Skill search is best-effort,
+    so it now degrades to "no skills" on any embedding error.
+  - Short queries were unaffected, which is why this only showed up on large
+    inputs.
 
 ---
 
