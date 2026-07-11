@@ -60,7 +60,7 @@ class skillLoader:
             input=[text],
             model=self._embedding_model,
             encoding_format="float",
-            extra_body={"input_type": "query", "truncate": "NONE"},
+            extra_body={"input_type": "query", "truncate": "END"},
         )
         return response.data[0].embedding
 
@@ -138,7 +138,14 @@ class skillLoader:
         if not self._index or not self._skills:
             raise ValueError("Skills not loaded. Call load() first.")
 
-        query_embedding = self._embed(query)
+        # Skill search is a best-effort enhancement. A flaky, oversized, or
+        # unreachable embedding endpoint must never crash the agent request that
+        # triggered the search — degrade to "no skills" and let the caller
+        # proceed with the base prompt.
+        try:
+            query_embedding = self._embed(query)
+        except Exception:
+            return []
         query_array = np.array([query_embedding], dtype=np.float32)
         faiss.normalize_L2(query_array)
 
