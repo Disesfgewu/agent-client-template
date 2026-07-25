@@ -18,6 +18,8 @@ class skillLoader:
         self._skillConfig = skillConfig
         self._skillPath = skillFolderPath
         self._skills = []
+        self._skill_map = {}
+        self._global_skills = []
         self._index = None
         self._loaded = False
 
@@ -74,6 +76,8 @@ class skillLoader:
             config = json.load(f)
 
         self._skills = []
+        self._skill_map = {}
+        self._global_skills = []
         embeddings = []
         updated_config = {}
         has_new_embeddings = False
@@ -87,27 +91,48 @@ class skillLoader:
             frontmatter, body = self._parse_frontmatter(full_content)
 
             description = frontmatter.get("description", "")
+            is_global = bool(
+                frontmatter.get("global", False)
+                or "shared" in Path(skill_info["relativePath"]).parts
+                or skill_info.get("global", False)
+            )
 
             if "embedding" in skill_info and skill_info["embedding"]:
                 embedding = skill_info["embedding"]
             else:
-                embedding = self._embed(description)
+                embedding = self._embed(description) if description else [0.0] * 1024
                 has_new_embeddings = True
 
             updated_entry = dict(skill_info)
             updated_entry["embedding"] = embedding
             updated_config[skill_name] = updated_entry
 
+            canonical_name = frontmatter.get("name", skill_name)
+
             skill_dict = {
                 "skill_embedding": embedding,
-                "skill_name": frontmatter.get("name", skill_name),
+                "skill_name": canonical_name,
                 "skill_description": description,
                 "skill_file_name": skill_info["relativePath"],
                 "skill_context": body,
                 "skill_frontmatter": frontmatter,
+                "domain": frontmatter.get("domain", ""),
+                "category": frontmatter.get("category", ""),
+                "requires": frontmatter.get("requires", []),
+                "optional": frontmatter.get("optional", []),
+                "is_global": is_global,
             }
 
+            idx = len(self._skills)
+            skill_dict["idx"] = idx
+
             self._skills.append(skill_dict)
+            self._skill_map[canonical_name] = skill_dict
+            self._skill_map[skill_name] = skill_dict
+
+            if is_global:
+                self._global_skills.append(skill_dict)
+
             embeddings.append(embedding)
 
         if has_new_embeddings:
@@ -124,6 +149,43 @@ class skillLoader:
         self._loaded = True
         return self._skills
 
+    def resolve_dependencies(self, matched_skills: list) -> list:
+        """Expand matched skills with their prerequisites specified in 'requires'.
+
+        Guards against circular dependencies and missing prerequisites.
+        """
+        resolved = []
+        visited = set()
+
+        def _traverse(skill_name: str, parent_score: float = 1.0):
+            if skill_name in visited:
+                return
+            visited.add(skill_name)
+
+            skill = self._skill_map.get(skill_name)
+            if not skill:
+                return
+
+            requires = skill.get("requires", [])
+            if isinstance(requires, list):
+                for req_name in requires:
+                    if isinstance(req_name, str):
+                        _traverse(req_name, parent_score)
+
+            skill_copy = skill.copy()
+            if "score" not in skill_copy:
+                skill_copy["score"] = parent_score
+            if skill_copy not in resolved:
+                resolved.append(skill_copy)
+
+        for s in matched_skills:
+            name = s.get("skill_name")
+            score = s.get("score", 1.0)
+            if name:
+                _traverse(name, score)
+
+        return resolved
+
     def getEmbedding(self, idx: int) -> list:
         if idx < 0 or idx >= len(self._skills):
             raise IndexError(f"Skill index {idx} out of range")
@@ -138,18 +200,9 @@ class skillLoader:
         if not self._loaded:
             raise ValueError("Skills not loaded. Call load() first.")
 
-        # An agent may legitimately run with no skills at all (e.g. an empty
-        # skills.json). Skill search is optional, so a loaded-but-empty loader
-        # returns no matches instead of forcing an embedding call. This also
-        # means such an agent never needs EMBEDDING_API configured — nothing to
-        # embed when there is nothing to search.
         if not self._index or not self._skills:
             return []
 
-        # Skill search is a best-effort enhancement. A flaky, oversized, or
-        # unreachable embedding endpoint must never crash the agent request that
-        # triggered the search — degrade to "no skills" and let the caller
-        # proceed with the base prompt.
         try:
             query_embedding = self._embed(query)
         except Exception:
@@ -173,11 +226,32 @@ class skillLoader:
 
         return results
 
-    def composeSkills(self, idxs: list) -> str:
+    def composeSkills(self, idxs: list, include_global: bool = True) -> str:
         composed = []
+        added_names = set()
+
+        if include_global and self._global_skills:
+            global_blocks = []
+            for g_skill in self._global_skills:
+                if g_skill["skill_name"] not in added_names:
+                    global_blocks.append(
+                        f"=== System Guideline: {g_skill['skill_name']} ===\n{g_skill['skill_context']}"
+                    )
+                    added_names.add(g_skill["skill_name"])
+            if global_blocks:
+                composed.append("\n\n".join(global_blocks))
+
+        topic_blocks = []
         for idx in idxs:
             skill = self.getSkill(idx)
-            composed.append(f"=== {skill['skill_name']} ===\n{skill['skill_context']}")
+            if skill["skill_name"] not in added_names:
+                topic_blocks.append(
+                    f"=== {skill['skill_name']} ===\n{skill['skill_context']}"
+                )
+                added_names.add(skill["skill_name"])
+
+        if topic_blocks:
+            composed.append("\n\n".join(topic_blocks))
 
         return "\n\n".join(composed)
 
@@ -185,11 +259,15 @@ class skillLoader:
         self, query: str, top_k: int = 3, min_score: float = 0.3
     ) -> tuple:
         results = self.search(query, top_k=top_k, min_score=min_score)
-        if not results:
-            return "", results
-        idxs = [r["idx"] for r in results]
-        composed = self.composeSkills(idxs)
-        return composed, results
+        
+        # Expand matched skills with their prerequisites via DAG resolution
+        expanded_skills = self.resolve_dependencies(results) if results else []
+
+        # Gather indices of all expanded skills
+        idxs = [s["idx"] for s in expanded_skills if "idx" in s]
+
+        composed = self.composeSkills(idxs, include_global=True)
+        return composed, expanded_skills if expanded_skills else results
 
     async def loadAsync(self) -> list:
         return await asyncio.to_thread(self.load)

@@ -88,7 +88,7 @@ install it as a dependency):
 ```bash
 pip install git+https://github.com/Disesfgewu/agent-client-template.git
 # a specific release:
-pip install git+https://github.com/Disesfgewu/agent-client-template.git@v1.4.1
+pip install git+https://github.com/Disesfgewu/agent-client-template.git@v1.5.0
 ```
 
 Or, from a local checkout (exposes the `disesfgewuAgent` import):
@@ -227,7 +227,36 @@ To **add a new skill**:
      "my-skill": { "relativePath": "my-skill.md" }
    }
    ```
-3. On the next run, its embedding is computed once and cached back into
+3. On the next run, its embedding is computed once and cached back into `config/skills.json`.
+
+#### Syncing Skills from GitHub (`Disesfgewu/skill-library`)
+
+`disesfgewuAgent` supports synchronizing skills directly from a remote GitHub repository such as [`Disesfgewu/skill-library`](https://github.com/Disesfgewu/skill-library).
+
+**Option A: Pass `skillSource` during initialization**
+
+```python
+from disesfgewuAgent import AgentClient
+
+client = AgentClient(
+    apiConfig=api_config,
+    skillSource="Disesfgewu/skill-library",  # Syncs skills from remote GitHub repo
+)
+```
+
+**Option B: Explicitly trigger `syncDefaultSkills()` or `sync_skills()`**
+
+```python
+from disesfgewuAgent import AgentClient, sync_skills
+
+# Standalone sync helper
+config_path, skill_folder = sync_skills(source="Disesfgewu/skill-library")
+
+# Or via AgentClient instance method
+client.syncDefaultSkills(source="Disesfgewu/skill-library")
+```
+
+> **Offline Fallback Guarantee**: If the network is unavailable, GitHub rates limits, or you are running offline, skill synchronization gracefully falls back to local bundled default skills (`bootstrap_default_skills()`) without interrupting agent initialization.
    `config/skills.json` (so subsequent runs are fast).
 
 The `skills.json` index is the source of truth for which skills exist; the
@@ -483,6 +512,14 @@ quota, so they require the endpoints to be reachable and within rate limits.
 
 Versioning follows [SemVer](https://semver.org/). Install a specific release with
 `pip install git+https://github.com/Disesfgewu/agent-client-template.git@vX.Y.Z`.
+
+### v1.5.0
+
+- **Multi-Domain Knowledge Skills System**: Full support for a 3-tier Knowledge Skill Architecture (`Global Router`, `Domain Router`, `Topic Skills`, `Shared Guidelines`).
+- **DAG Dependency Resolution (`requires`)**: Topic skills (e.g. `forwarding`) automatically resolve required prerequisite skills (e.g. `datapath`, `pipeline_hazard`) in topological order with circular dependency protection.
+- **Shared System Guidelines Auto-Injection**: System-level guidelines with `global: true` or located in `shared/` (teaching methodology, step-by-step reasoning rules, ASCII diagram formatting, citation rules) are automatically prepended to prompts.
+- **Recursive Skill Discovery (`discover_skills_in_dir`)**: Recursively discovers nested Markdown skills across multi-level domain directories (`knowledge/shared/`, `knowledge/domains/...`).
+- **GitHub Remote Skill Library Sync (`Disesfgewu/skill-library`)**: Integrated `skillSync` module. `AgentClient` defaults to syncing skills from [`Disesfgewu/skill-library`](https://github.com/Disesfgewu/skill-library) with seamless offline fallback (`bootstrap_default_skills()`).
 
 ### v1.4.1
 

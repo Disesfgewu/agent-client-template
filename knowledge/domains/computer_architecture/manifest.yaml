@@ -1,0 +1,21 @@
+domain: computer_architecture
+version: 1.0.0
+description: "Manifest for NCKU Computer Architecture Domain Skills"
+
+skills:
+  datapath:
+    requires: []
+  pipeline_hazard:
+    requires: [datapath]
+  forwarding:
+    requires: [datapath, pipeline_hazard]
+  branch_prediction:
+    requires: [pipeline_hazard]
+  locality:
+    requires: []
+  cache:
+    requires: [locality]
+  virtual_memory:
+    requires: []
+  tlb:
+    requires: [virtual_memory, cache]

@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 
 import tiktoken
 
@@ -18,6 +18,7 @@ from disesfgewuAgent.defaultSkills import bootstrap_default_skills
 from disesfgewuAgent.inputFileManager import inputFileManager
 from disesfgewuAgent.llmRouter import llmRouter
 from disesfgewuAgent.skillLoader import skillLoader
+from disesfgewuAgent.skillSync import sync_skills, SkillSyncError, DEFAULT_SKILL_LIBRARY_REPO
 
 # Reasoning-heavy words (English + Chinese) that hint at a harder task. Matched
 # as case-insensitive substrings against the RAW task only.
@@ -106,6 +107,7 @@ class AgentClient:
         browserTimeout: int = 30,
         codeExecutionTimeout: int = 30,
         maxIterations: int = 2000,
+        skillSource: Optional[str] = None,
         onEvent=None,
         onApprove=None,
     ):
@@ -124,8 +126,21 @@ class AgentClient:
             )
         if maxIterations < 1:
             raise ValueError("maxIterations must be >= 1")
+
+        self._skillSource = skillSource or DEFAULT_SKILL_LIBRARY_REPO
         if skillConfigPath is None and skillFolderPath is None:
-            skillConfigPath, skillFolderPath = bootstrap_default_skills()
+            try:
+                skillConfigPath, skillFolderPath = sync_skills(source=self._skillSource)
+            except SkillSyncError as e:
+                logging.getLogger(__name__).warning(
+                    f"Failed to sync skills from '{self._skillSource}': {e}. Falling back to bundled default skills."
+                )
+                skillConfigPath, skillFolderPath = bootstrap_default_skills()
+            except Exception as e:
+                logging.getLogger(__name__).warning(
+                    f"Unexpected error syncing skills from '{self._skillSource}': {e}. Falling back to bundled default skills."
+                )
+                skillConfigPath, skillFolderPath = bootstrap_default_skills()
 
         self._router = llmRouter(apiConfig, routingStrategy)
         self._skillLoader = skillLoader(skillConfigPath, skillFolderPath)
@@ -185,6 +200,40 @@ class AgentClient:
         self._onApprove = onApprove
 
         self._resetState()
+
+    def syncDefaultSkills(
+        self,
+        source: Optional[str] = None,
+        branch: str = "main",
+        timeout: float = 10.0,
+        overwrite: bool = False,
+    ) -> Tuple[str, str]:
+        """Sync skills from a remote repository (default: Disesfgewu/skill-library).
+
+        If remote sync fails, gracefully falls back to local bundled default skills.
+        Returns (skillConfigPath, skillFolderPath).
+        """
+        src = source or self._skillSource or DEFAULT_SKILL_LIBRARY_REPO
+        try:
+            cfg_path, folder_path = sync_skills(
+                source=src, branch=branch, timeout=timeout, overwrite=overwrite
+            )
+            self._skillLoader = skillLoader(cfg_path, folder_path)
+            return cfg_path, folder_path
+        except SkillSyncError as err:
+            self._logger.warning(
+                f"Failed to sync default skills from '{src}': {err}. Falling back to bundled default skills."
+            )
+            cfg_path, folder_path = bootstrap_default_skills()
+            self._skillLoader = skillLoader(cfg_path, folder_path)
+            return cfg_path, folder_path
+        except Exception as err:
+            self._logger.warning(
+                f"Unexpected error syncing default skills from '{src}': {err}. Falling back to bundled default skills."
+            )
+            cfg_path, folder_path = bootstrap_default_skills()
+            self._skillLoader = skillLoader(cfg_path, folder_path)
+            return cfg_path, folder_path
 
     def _emit(self, event: dict) -> None:
         if self._onEvent is None:

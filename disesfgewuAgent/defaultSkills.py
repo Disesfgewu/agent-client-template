@@ -86,3 +86,30 @@ def bootstrap_default_skills(
             )
 
     return str(skill_config), str(skill_folder)
+
+
+def discover_skills_in_dir(folder_path: str, config_path: Optional[str] = None) -> Tuple[str, str]:
+    """Recursively discover markdown skills in folder_path and build a skills.json registry.
+
+    Returns (skills_config_path, folder_path).
+    """
+    root = Path(folder_path).resolve()
+    cfg_file = Path(config_path).resolve() if config_path else root / "skills.json"
+
+    registry = {}
+    for md_file in sorted(root.rglob("*.md"), key=lambda p: str(p)):
+        if md_file.name == "README.md":
+            continue
+        try:
+            content = md_file.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        rel_path = str(md_file.relative_to(root)).replace("\\", "/")
+        name = _parse_frontmatter_name(content, md_file.stem)
+        registry[name] = {"relativePath": rel_path}
+
+    cfg_file.write_text(
+        json.dumps(registry, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return str(cfg_file), str(root)
