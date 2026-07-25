@@ -756,6 +756,41 @@ class TestAgentShellExecution(unittest.IsolatedAsyncioTestCase):
         finally:
             shutil.rmtree(work)
 
+    def test_max_iterations_preserves_last_step_answer_and_reasoning(self):
+        agent = AgentClient(
+            apiConfig=SAMPLE_API_CONFIG,
+            maxIterations=2,
+        )
+        async def mock_action(informations=""):
+            return json.dumps({
+                "status": "continue",
+                "answer": "Intermediate progress step 1",
+                "reasoning": "Step 1 thinking process",
+                "next_action": "do step 2"
+            })
+        
+        with patch.object(agent, "_action", side_effect=mock_action):
+            result = asyncio.run(agent.ask("Do complex task"))
+
+        self.assertEqual(result["status"], "max_iterations")
+        self.assertEqual(result["answer"], "Intermediate progress step 1")
+        self.assertEqual(result["reasoning"], "Step 1 thinking process")
+        self.assertEqual(len(result["steps"]), 2)
+
+    def test_all_llm_endpoints_failed_returns_error_dict(self):
+        agent = AgentClient(
+            apiConfig=SAMPLE_API_CONFIG,
+        )
+        async def mock_connect(*args, **kwargs):
+            raise Exception("All LLM endpoints failed:\ntest-model: connection refused")
+        
+        with patch.object(agent._router, "connect", side_effect=mock_connect):
+            result = asyncio.run(agent.ask("Hello"))
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("All LLM endpoints failed", result["error"])
+        self.assertEqual(result["answer"], "")
+
 
 @unittest.skipUnless(live_api_available(), SKIP_REASON)
 class TestAgentReal(unittest.IsolatedAsyncioTestCase):

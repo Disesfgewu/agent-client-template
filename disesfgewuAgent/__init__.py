@@ -7,7 +7,7 @@ from disesfgewuAgent.skillLoader import skillLoader
 from disesfgewuAgent.inputFileManager import inputFileManager
 from disesfgewuAgent.skillSync import sync_skills, SkillSyncer, SkillSyncError, DEFAULT_SKILL_LIBRARY_REPO
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"
 
 __all__ = [
     "AgentClient",

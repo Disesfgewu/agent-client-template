@@ -819,7 +819,24 @@ class AgentClient:
             )
             result["iterations"] = iteration
 
-            response = await self._action(informations)
+            try:
+                response = await self._action(informations)
+            except Exception as e:
+                self._logger.error(f"Action failed at iteration {iteration}: {e}", exc_info=True)
+                result["status"] = "error"
+                result["error"] = str(e)
+                if not result["answer"]:
+                    for step in reversed(result.get("steps", [])):
+                        if step.get("answer"):
+                            result["answer"] = step["answer"]
+                            break
+                if not result["reasoning"]:
+                    for step in reversed(result.get("steps", [])):
+                        if step.get("reasoning"):
+                            result["reasoning"] = step["reasoning"]
+                            break
+                await self._backupHistory()
+                return result
             self._history.append({"iteration": iteration, "response": response})
 
             signal = self._parseSignal(response)
@@ -1096,7 +1113,18 @@ class AgentClient:
 
         self._logger.warning("Max iterations reached")
         result["status"] = "max_iterations"
-        result["answer"] = result["answer"] or "Max iterations reached."
+        if not result["answer"]:
+            for step in reversed(result.get("steps", [])):
+                if step.get("answer"):
+                    result["answer"] = step["answer"]
+                    break
+            if not result["answer"]:
+                result["answer"] = "Max iterations reached."
+        if not result["reasoning"]:
+            for step in reversed(result.get("steps", [])):
+                if step.get("reasoning"):
+                    result["reasoning"] = step["reasoning"]
+                    break
         await self._backupHistory()
         return result
 
@@ -1266,8 +1294,16 @@ class AgentClient:
         self._resetState()
         if userPrompt is None:
             userPrompt = inputStr or ""
-        await self._getInputs(userPrompt, inputFiles, systemPrompt, userPrompt)
-        return await self._actionLoop()
+        try:
+            await self._getInputs(userPrompt, inputFiles, systemPrompt, userPrompt)
+            return await self._actionLoop()
+        except Exception as e:
+            self._logger.error(f"Agent execution error: {e}", exc_info=True)
+            result = self._emptyResult()
+            result["status"] = "error"
+            result["error"] = str(e)
+            await self._backupHistory()
+            return result
 
     def _buildConversationInput(self, message: str) -> str:
         if not self._conversation:
